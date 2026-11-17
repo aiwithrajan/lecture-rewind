@@ -116,6 +116,23 @@ export type AbsenceState =
   | 'Returned'
   | 'Degraded';
 
+// 13b. Session Telemetry Metrics captured during playback for Review & Agent analysis
+export interface StateSegment {
+  state: AbsenceState;
+  startSec: number; // Session wall-clock seconds
+  endSec: number;
+  videoTimeSec: number; // Lecture video timestamp when segment started
+}
+
+export interface SessionMetrics {
+  watchingDurationSec: number;
+  absentDurationSec: number;
+  degradedDurationSec: number;
+  totalBlinks: number;
+  furthestVideoTimeSec: number;
+  stateTimeline: StateSegment[];
+}
+
 // 14. Session Document (PRD Section 10 Schema)
 export interface SessionDocument {
   version: 1; // Integer schema version for forward compatibility
@@ -128,7 +145,40 @@ export interface SessionDocument {
   quality: QualityBucket[];
   queue: QueueInterval[];
   pulse: PulsePoint[];
+  metrics?: SessionMetrics;
   incomplete?: boolean; // Flag if application closed mid-session
+}
+
+// 17. Hybrid Session Review Agent Contracts (Gemini + Local Open-Source Ollama Failover)
+export type AgentEngineMode = 'auto' | 'gemini' | 'ollama';
+export type AgentLanguage = 'hinglish' | 'english';
+
+export interface AgentChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+export interface AgentStatus {
+  geminiConfigured: boolean;
+  ollamaAvailable: boolean;
+  ollamaModels: string[];
+  defaultOllamaModel: string;
+}
+
+export interface AgentRequest {
+  session: SessionDocument;
+  question?: string;
+  history?: AgentChatMessage[];
+  engine?: AgentEngineMode;
+  ollamaModel?: string;
+  language?: AgentLanguage;
+}
+
+export interface AgentResponse {
+  answer: string;
+  providerUsed: 'gemini' | 'ollama' | 'offline';
+  modelUsed: string;
+  failoverReason?: string;
 }
 
 // 15. Consent Record (PRD FR-3 & Section 11)

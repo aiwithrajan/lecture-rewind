@@ -1,7 +1,15 @@
 import '@smartspectra/node-sdk/preload';
 import { contextBridge, ipcRenderer } from 'electron';
 import { IPC_CHANNELS } from '@shared/ipc-channels';
-import { ConsentRecord, SessionDocument, ChapterInfo, NetworkGuardStats } from '@shared/types';
+import {
+  AgentRequest,
+  AgentResponse,
+  AgentStatus,
+  ChapterInfo,
+  ConsentRecord,
+  NetworkGuardStats,
+  SessionDocument
+} from '@shared/types';
 
 export const rewindApi = {
   sessions: {
@@ -23,6 +31,10 @@ export const rewindApi = {
   },
   dialog: {
     openVideoFile: (): Promise<string | null> => ipcRenderer.invoke(IPC_CHANNELS.DIALOG_OPEN_FILE)
+  },
+  agent: {
+    getStatus: (): Promise<AgentStatus> => ipcRenderer.invoke(IPC_CHANNELS.AGENT_STATUS),
+    query: (req: AgentRequest): Promise<AgentResponse> => ipcRenderer.invoke(IPC_CHANNELS.AGENT_QUERY, req)
   }
 };
 

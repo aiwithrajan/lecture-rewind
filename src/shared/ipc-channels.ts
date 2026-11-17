@@ -22,7 +22,11 @@ export const IPC_CHANNELS = {
   CHAPTERS_PARSE: 'chapters:parse',
 
   // Native Dialogs
-  DIALOG_OPEN_FILE: 'dialog:open-file'
+  DIALOG_OPEN_FILE: 'dialog:open-file',
+
+  // Hybrid Session Review Agent (Gemini + Local Ollama Failover)
+  AGENT_STATUS: 'agent:status',
+  AGENT_QUERY: 'agent:query'
 } as const;
 
 export type IpcChannel = typeof IPC_CHANNELS[keyof typeof IPC_CHANNELS];

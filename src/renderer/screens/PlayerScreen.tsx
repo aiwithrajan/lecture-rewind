@@ -7,6 +7,8 @@ import {
   PulsePoint,
   QualityBucket,
   SessionDocument,
+  SessionMetrics,
+  StateSegment,
   VideoSource
 } from '@shared/types';
 import { AbsenceStateMachine } from '../engine/AbsenceStateMachine';
@@ -140,6 +142,31 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
   const blinkFlashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const startTimeRef = useRef<string>(new Date().toISOString());
+
+  // Continuous session presence telemetry for Review Screen & AI Agent
+  const sessionMetricsRef = useRef<{
+    watchingSec: number;
+    absentSec: number;
+    degradedSec: number;
+    totalBlinks: number;
+    furthestVideoSec: number;
+    lastFrameTs: number;
+    currentState: AbsenceState;
+    currentStateStartSec: number;
+    currentStateVideoSec: number;
+    timeline: StateSegment[];
+  }>({
+    watchingSec: 0,
+    absentSec: 0,
+    degradedSec: 0,
+    totalBlinks: 0,
+    furthestVideoSec: 0,
+    lastFrameTs: -1,
+    currentState: 'Watching',
+    currentStateStartSec: 0,
+    currentStateVideoSec: 0,
+    timeline: []
+  });
 
   // Send JSON command to embedded YouTube IFrame API
   const sendYouTubeCommand = useCallback((func: string, args: any[] = []) => {
@@ -293,6 +320,28 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
       duration
     );
 
+    // Finalize current state segment for session metrics
+    const m = sessionMetricsRef.current;
+    const finalWallSec = Math.max(m.currentStateStartSec, m.lastFrameTs >= 0 ? m.lastFrameTs : m.watchingSec + m.absentSec + m.degradedSec);
+    const finalizedTimeline: StateSegment[] = [...m.timeline];
+    if (finalWallSec - m.currentStateStartSec >= 1.0) {
+      finalizedTimeline.push({
+        state: m.currentState,
+        startSec: Number(m.currentStateStartSec.toFixed(1)),
+        endSec: Number(finalWallSec.toFixed(1)),
+        videoTimeSec: Number(m.currentStateVideoSec.toFixed(1))
+      });
+    }
+
+    const metrics: SessionMetrics = {
+      watchingDurationSec: Number(m.watchingSec.toFixed(1)),
+      absentDurationSec: Number(m.absentSec.toFixed(1)),
+      degradedDurationSec: Number(m.degradedSec.toFixed(1)),
+      totalBlinks: m.totalBlinks,
+      furthestVideoTimeSec: Number(Math.max(m.furthestVideoSec, currentTimeRef.current).toFixed(1)),
+      stateTimeline: finalizedTimeline
+    };
+
     const doc: SessionDocument = {
       version: 1,
       id: `session-${Date.now()}`,
@@ -307,7 +356,8 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
       events,
       quality: qualityBuckets,
       queue,
-      pulse: pulsePoints
+      pulse: pulsePoints,
+      metrics
     };
 
     // Save to storage via IPC if available
@@ -342,6 +392,22 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
     const sm = new AbsenceStateMachine({
       onStateChange: (newState) => {
         setAbsenceState(newState);
+        const m = sessionMetricsRef.current;
+        const nowWall = m.lastFrameTs >= 0 ? m.lastFrameTs : 0;
+        const nowVideo = youtubeVideoId
+          ? currentTimeRef.current
+          : (videoRef.current ? videoRef.current.currentTime : currentTimeRef.current);
+        if (nowWall - m.currentStateStartSec >= 0.5) {
+          m.timeline.push({
+            state: m.currentState,
+            startSec: Number(m.currentStateStartSec.toFixed(1)),
+            endSec: Number(nowWall.toFixed(1)),
+            videoTimeSec: Number(m.currentStateVideoSec.toFixed(1))
+          });
+        }
+        m.currentState = newState;
+        m.currentStateStartSec = nowWall;
+        m.currentStateVideoSec = nowVideo;
       },
       onPauseRequested: (pauseEv) => {
         pausePlayback();
@@ -381,6 +447,24 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
         ? currentTimeRef.current
         : (videoRef.current ? videoRef.current.currentTime : 0);
       const videoTs = liveVideoTime > 0 ? liveVideoTime : frame.timestamp;
+
+      // Accumulate real-time watching / absent / degraded duration stats
+      const m = sessionMetricsRef.current;
+      if (m.lastFrameTs >= 0) {
+        const dt = Math.min(1.0, Math.max(0, frame.timestamp - m.lastFrameTs));
+        const st = sm.getState();
+        if (st === 'Watching' || st === 'Suspect') {
+          m.watchingSec += dt;
+        } else if (st === 'Absent' || st === 'Waiting' || st === 'Returned') {
+          m.absentSec += dt;
+        } else if (st === 'Degraded') {
+          m.degradedSec += dt;
+        }
+      }
+      m.lastFrameTs = frame.timestamp;
+      if (liveVideoTime > m.furthestVideoSec) {
+        m.furthestVideoSec = liveVideoTime;
+      }
 
       // Record quality bucket against video timeline
       qualityRibbonRef.current.addFrame({ ...frame, timestamp: videoTs });
@@ -459,6 +543,7 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
           // Count distinct blinks (35ms - 2000ms closure, 180ms refractory debounce)
           if (closedMs >= 35 && closedMs <= 2000 && sinceLastBlinkMs >= 180) {
             lastBlinkEndMsRef.current = nowMs;
+            sessionMetricsRef.current.totalBlinks += 1;
             setBlinkCount((c) => c + 1);
             setBlinkFlash(true);
             if (blinkFlashTimerRef.current) {

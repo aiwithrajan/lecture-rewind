@@ -6,6 +6,7 @@ import { ConsentRecord, SessionDocument } from '@shared/types';
 import { StorageManager } from './storage';
 import { NetworkGuard } from './network-guard';
 import { parseChaptersForVideo } from './chapter-parser';
+import { SessionReviewAgent } from './session-agent';
 
 // Register custom local-video:// scheme with streaming & range support before app ready
 protocol.registerSchemesAsPrivileged([
@@ -34,6 +35,7 @@ try {
 let mainWindow: BrowserWindow | null = null;
 const storageManager = new StorageManager();
 const networkGuard = new NetworkGuard();
+const sessionReviewAgent = new SessionReviewAgent();
 
 function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
@@ -154,6 +156,15 @@ function registerIpcHandlers(): void {
       return null;
     }
     return result.filePaths[0];
+  });
+
+  // Hybrid Session Review Agent (Gemini + Local Ollama Failover)
+  ipcMain.handle(IPC_CHANNELS.AGENT_STATUS, async () => {
+    return sessionReviewAgent.getStatus();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.AGENT_QUERY, async (_event, req) => {
+    return sessionReviewAgent.query(req);
   });
 }
 

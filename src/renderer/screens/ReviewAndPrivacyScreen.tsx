@@ -1,5 +1,14 @@
-import React, { useState, useEffect } from 'react';
-import { NetworkGuardStats, QueueInterval, SessionDocument } from '@shared/types';
+import React, { useState, useEffect, useRef } from 'react';
+import {
+  AgentChatMessage,
+  AgentEngineMode,
+  AgentLanguage,
+  AgentResponse,
+  AgentStatus,
+  NetworkGuardStats,
+  QueueInterval,
+  SessionDocument
+} from '@shared/types';
 import { QueueBuilder } from '../engine/QueueBuilder';
 
 interface ReviewAndPrivacyScreenProps {
@@ -25,13 +34,123 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
   const [deleteConfirmation, setDeleteConfirmation] = useState(false);
   const [telemetryEnabled, setTelemetryEnabled] = useState(false);
 
+  // Hybrid AI Session Review Agent state (Gemini 2.5 Flash + Local Ollama Open-Source failover)
+  const [agentStatus, setAgentStatus] = useState<AgentStatus>({
+    geminiConfigured: false,
+    ollamaAvailable: false,
+    ollamaModels: [],
+    defaultOllamaModel: 'gemma:2b'
+  });
+  const [agentEngine, setAgentEngine] = useState<AgentEngineMode>('auto');
+  const [selectedOllamaModel, setSelectedOllamaModel] = useState<string>('gemma:2b');
+  const [agentLanguage, setAgentLanguage] = useState<AgentLanguage>('hinglish');
+  const [agentLoading, setAgentLoading] = useState<boolean>(false);
+  const [agentMeta, setAgentMeta] = useState<Pick<AgentResponse, 'providerUsed' | 'modelUsed' | 'failoverReason'> | null>(null);
+  const [chatMessages, setChatMessages] = useState<AgentChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState<string>('');
+  const chatEndRef = useRef<HTMLDivElement | null>(null);
+  const hasAutoAnalyzedRef = useRef<boolean>(false);
+
   const durationSec = session.source.duration || 3600;
   const queueTotalSec = QueueBuilder.calculateTotalDuration(session.queue || []);
   const headline = QueueBuilder.formatReviewHeadline(durationSec, queueTotalSec);
+  const metrics = session.metrics;
 
   useEffect(() => {
     loadNetworkStats();
+    loadAgentStatus();
   }, []);
+
+  useEffect(() => {
+    // Auto-run session analysis once when opening a real lecture review
+    if (
+      activeTab === 'review' &&
+      session.id !== 'settings-privacy' &&
+      !hasAutoAnalyzedRef.current
+    ) {
+      hasAutoAnalyzedRef.current = true;
+      runAgentQuery();
+    }
+  }, [activeTab, session.id]);
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [chatMessages, agentLoading]);
+
+  const loadAgentStatus = async () => {
+    try {
+      if ((window as any).rewindApi?.agent) {
+        const status: AgentStatus = await (window as any).rewindApi.agent.getStatus();
+        setAgentStatus(status);
+        if (status.defaultOllamaModel) {
+          setSelectedOllamaModel(status.defaultOllamaModel);
+        }
+      }
+    } catch {
+      // Standalone fallback
+    }
+  };
+
+  const runAgentQuery = async (customQuestion?: string, overrideEngine?: AgentEngineMode, overrideLang?: AgentLanguage) => {
+    if (agentLoading) return;
+    const trimmedQ = customQuestion?.trim();
+    const useEngine = overrideEngine || agentEngine;
+    const useLang = overrideLang || agentLanguage;
+
+    const historySnapshot = trimmedQ ? [...chatMessages] : [];
+    if (trimmedQ) {
+      setChatMessages((prev) => [...prev, { role: 'user', content: trimmedQ }]);
+      setChatInput('');
+    } else {
+      setChatMessages([]);
+    }
+
+    setAgentLoading(true);
+    try {
+      if ((window as any).rewindApi?.agent) {
+        const res: AgentResponse = await (window as any).rewindApi.agent.query({
+          session,
+          question: trimmedQ,
+          history: historySnapshot,
+          engine: useEngine,
+          ollamaModel: selectedOllamaModel,
+          language: useLang
+        });
+        setAgentMeta({
+          providerUsed: res.providerUsed,
+          modelUsed: res.modelUsed,
+          failoverReason: res.failoverReason
+        });
+        setChatMessages((prev) => [...prev, { role: 'assistant', content: res.answer }]);
+      } else {
+        setChatMessages((prev) => [
+          ...prev,
+          {
+            role: 'assistant',
+            content: 'Agent IPC is only available inside the Electron desktop app.'
+          }
+        ]);
+      }
+    } catch (err: any) {
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          role: 'assistant',
+          content: `Agent error: ${err?.message || 'Unable to analyze session right now.'}`
+        }
+      ]);
+    } finally {
+      setAgentLoading(false);
+    }
+  };
+
+  const formatDurationShort = (sec: number) => {
+    const s = Math.max(0, Math.round(sec || 0));
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60);
+    const r = s % 60;
+    return r > 0 ? `${m}m ${r}s` : `${m}m`;
+  };
 
   const loadNetworkStats = async () => {
     try {
@@ -236,6 +355,336 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
                   Export JSON
                 </button>
               </div>
+            </div>
+
+            {/* Session Presence Stats Grid */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px' }}>
+              <div style={{ background: '#151d2f', border: '1px solid #2e3c54', borderRadius: '10px', padding: '16px' }}>
+                <div style={{ fontSize: '11px', color: '#94a3b8', textTransform: 'uppercase' }}>Watching Time</div>
+                <div style={{ fontSize: '22px', fontWeight: 700, color: '#10b981', fontFamily: 'monospace', marginTop: '4px' }}>
+                  {formatDurationShort(metrics?.watchingDurationSec || 0)}
+                </div>
+                <div style={{ fontSize: '11px', color: '#64748b', marginTop: '2px' }}>
+                  Furthest video: {formatSec(metrics?.furthestVideoTimeSec || 0)}
+                </div>
+              </div>
+
+              <div style={{ background: '#151d2f', border: '1px solid #2e3c54', borderRadius: '10px', padding: '16px' }}>
+                <div style={{ fontSize: '11px', color: '#94a3b8', textTransform: 'uppercase' }}>Absent / Paused</div>
+                <div style={{ fontSize: '22px', fontWeight: 700, color: '#f43f5e', fontFamily: 'monospace', marginTop: '4px' }}>
+                  {formatDurationShort(metrics?.absentDurationSec || 0)}
+                </div>
+                <div style={{ fontSize: '11px', color: '#64748b', marginTop: '2px' }}>
+                  Low camera signal: {formatDurationShort(metrics?.degradedDurationSec || 0)}
+                </div>
+              </div>
+
+              <div style={{ background: '#151d2f', border: '1px solid #2e3c54', borderRadius: '10px', padding: '16px' }}>
+                <div style={{ fontSize: '11px', color: '#94a3b8', textTransform: 'uppercase' }}>Total Blinks</div>
+                <div style={{ fontSize: '22px', fontWeight: 700, color: '#38bdf8', fontFamily: 'monospace', marginTop: '4px' }}>
+                  {metrics?.totalBlinks ?? 0}
+                </div>
+                <div style={{ fontSize: '11px', color: '#64748b', marginTop: '2px' }}>
+                  478-pt live eye mesh
+                </div>
+              </div>
+
+              <div style={{ background: '#151d2f', border: '1px solid #2e3c54', borderRadius: '10px', padding: '16px' }}>
+                <div style={{ fontSize: '11px', color: '#94a3b8', textTransform: 'uppercase' }}>Recorded Events</div>
+                <div style={{ fontSize: '22px', fontWeight: 700, color: '#f59e0b', fontFamily: 'monospace', marginTop: '4px' }}>
+                  {(session.events || []).length}
+                </div>
+                <div style={{ fontSize: '11px', color: '#64748b', marginTop: '2px' }}>
+                  {(session.events || []).filter((e) => e.type === 'pause').length} pauses · {(session.events || []).filter((e) => e.type === 'marker').length} markers · {(session.events || []).filter((e) => e.type === 'bookmark').length} bookmarks
+                </div>
+              </div>
+            </div>
+
+            {/* Hybrid AI Session Review Agent (Gemini 2.5 Flash + Local Open-Source Ollama Failover) */}
+            <div style={{
+              background: '#151d2f',
+              border: '1px solid #3b82f6',
+              borderRadius: '14px',
+              padding: '24px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '16px'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <h2 style={{ fontSize: '17px', fontWeight: 700, color: '#f8fafc' }}>
+                      AI Session Review Agent
+                    </h2>
+                    {agentMeta && (
+                      <span style={{
+                        fontSize: '11px',
+                        fontFamily: 'monospace',
+                        padding: '2px 8px',
+                        borderRadius: '10px',
+                        fontWeight: 600,
+                        background: agentMeta.providerUsed === 'gemini'
+                          ? 'rgba(59, 130, 246, 0.2)'
+                          : agentMeta.providerUsed === 'ollama'
+                          ? 'rgba(16, 185, 129, 0.2)'
+                          : 'rgba(148, 163, 184, 0.2)',
+                        border: `1px solid ${
+                          agentMeta.providerUsed === 'gemini'
+                            ? '#3b82f6'
+                            : agentMeta.providerUsed === 'ollama'
+                            ? '#10b981'
+                            : '#64748b'
+                        }`,
+                        color: agentMeta.providerUsed === 'gemini'
+                          ? '#60a5fa'
+                          : agentMeta.providerUsed === 'ollama'
+                          ? '#34d399'
+                          : '#cbd5e1'
+                      }}>
+                        {agentMeta.providerUsed === 'gemini'
+                          ? `Gemini: ${agentMeta.modelUsed}`
+                          : agentMeta.providerUsed === 'ollama'
+                          ? `Local Open-Source: ${agentMeta.modelUsed}`
+                          : 'Offline Local Engine'}
+                      </span>
+                    )}
+                  </div>
+                  <p style={{ fontSize: '12px', color: '#94a3b8', marginTop: '3px' }}>
+                    Processes your session JSON into exact timestamps, watching breakdown & rewatch guidance. Auto-switches to local Ollama on quota limits.
+                  </p>
+                </div>
+
+                {/* Engine, Local Model & Language Controls */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                  <select
+                    value={agentEngine}
+                    onChange={(e) => setAgentEngine(e.target.value as AgentEngineMode)}
+                    title="Select AI Engine"
+                    style={{
+                      background: '#0b0f19',
+                      border: '1px solid #2e3c54',
+                      color: '#f8fafc',
+                      padding: '6px 10px',
+                      borderRadius: '6px',
+                      fontSize: '12px',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    <option value="auto">Auto (Gemini → Local Ollama)</option>
+                    <option value="gemini" disabled={!agentStatus.geminiConfigured}>
+                      Gemini 2.5 Flash {!agentStatus.geminiConfigured ? '(No Key)' : ''}
+                    </option>
+                    <option value="ollama">
+                      Local Open-Source (Ollama)
+                    </option>
+                  </select>
+
+                  {agentStatus.ollamaModels.length > 0 && (
+                    <select
+                      value={selectedOllamaModel}
+                      onChange={(e) => setSelectedOllamaModel(e.target.value)}
+                      title="Local Open-Source Ollama Model (Failover / Local Mode)"
+                      style={{
+                        background: '#0b0f19',
+                        border: '1px solid #2e3c54',
+                        color: '#34d399',
+                        padding: '6px 10px',
+                        borderRadius: '6px',
+                        fontSize: '12px',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      {agentStatus.ollamaModels.map((modelName) => (
+                        <option key={modelName} value={modelName}>
+                          Local: {modelName}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+
+                  <select
+                    value={agentLanguage}
+                    onChange={(e) => setAgentLanguage(e.target.value as AgentLanguage)}
+                    title="Response Language"
+                    style={{
+                      background: '#0b0f19',
+                      border: '1px solid #2e3c54',
+                      color: '#cbd5e1',
+                      padding: '6px 10px',
+                      borderRadius: '6px',
+                      fontSize: '12px',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    <option value="hinglish">Hinglish</option>
+                    <option value="english">English</option>
+                  </select>
+
+                  <button
+                    onClick={() => runAgentQuery()}
+                    disabled={agentLoading}
+                    style={{
+                      background: agentLoading ? '#1e293b' : '#2563eb',
+                      border: 'none',
+                      color: '#fff',
+                      padding: '7px 14px',
+                      borderRadius: '6px',
+                      fontSize: '12px',
+                      fontWeight: 600,
+                      cursor: agentLoading ? 'wait' : 'pointer'
+                    }}
+                  >
+                    {agentLoading ? 'Analyzing...' : 'Re-Analyze JSON'}
+                  </button>
+                </div>
+              </div>
+
+              {agentMeta?.failoverReason && (
+                <div style={{
+                  background: 'rgba(245, 158, 11, 0.12)',
+                  border: '1px solid #f59e0b',
+                  color: '#fcd34d',
+                  padding: '8px 12px',
+                  borderRadius: '8px',
+                  fontSize: '12px'
+                }}>
+                  ⚡ {agentMeta.failoverReason}
+                </div>
+              )}
+
+              {/* Agent Output & Conversation Stream */}
+              <div style={{
+                background: '#0b0f19',
+                border: '1px solid #1e293b',
+                borderRadius: '10px',
+                padding: '16px',
+                maxHeight: '340px',
+                overflowY: 'auto',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '12px'
+              }}>
+                {chatMessages.length === 0 && !agentLoading && (
+                  <div style={{ color: '#64748b', fontSize: '13px', textAlign: 'center', padding: '16px' }}>
+                    Click "Re-Analyze JSON" or ask a question below to inspect your lecture session.
+                  </div>
+                )}
+
+                {chatMessages.map((msg, idx) => (
+                  <div
+                    key={idx}
+                    style={{
+                      alignSelf: msg.role === 'user' ? 'flex-end' : 'stretch',
+                      background: msg.role === 'user' ? '#1d4ed8' : '#151d2f',
+                      border: msg.role === 'user' ? 'none' : '1px solid #2e3c54',
+                      borderRadius: '10px',
+                      padding: '12px 14px',
+                      maxWidth: msg.role === 'user' ? '78%' : '100%',
+                      fontSize: '13px',
+                      lineHeight: 1.6,
+                      color: '#e2e8f0',
+                      whiteSpace: 'pre-wrap',
+                      userSelect: 'text',
+                      WebkitUserSelect: 'text'
+                    }}
+                  >
+                    <div style={{
+                      fontSize: '10px',
+                      fontWeight: 700,
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.6px',
+                      color: msg.role === 'user' ? '#bfdbfe' : '#38bdf8',
+                      marginBottom: '4px'
+                    }}>
+                      {msg.role === 'user' ? 'You' : 'Lecture Rewind Agent'}
+                    </div>
+                    {msg.content}
+                  </div>
+                ))}
+
+                {agentLoading && (
+                  <div style={{
+                    background: '#151d2f',
+                    border: '1px solid #2e3c54',
+                    borderRadius: '10px',
+                    padding: '12px 14px',
+                    fontSize: '13px',
+                    color: '#38bdf8'
+                  }}>
+                    Analyzing session JSON timestamps and metrics...
+                  </div>
+                )}
+                <div ref={chatEndRef} />
+              </div>
+
+              {/* Quick Question Chips */}
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                {[
+                  'Kahan-kahan lecture miss hua?',
+                  'Kitni der watching aur kitni der absent tha?',
+                  'Sabse pehle kahan se rewatch karu?',
+                  'All events & bookmarks explain karo'
+                ].map((chip) => (
+                  <button
+                    key={chip}
+                    disabled={agentLoading}
+                    onClick={() => runAgentQuery(chip)}
+                    style={{
+                      background: '#1e293b',
+                      border: '1px solid #2e3c54',
+                      color: '#cbd5e1',
+                      padding: '5px 10px',
+                      borderRadius: '14px',
+                      fontSize: '11px',
+                      cursor: agentLoading ? 'not-allowed' : 'pointer'
+                    }}
+                  >
+                    {chip}
+                  </button>
+                ))}
+              </div>
+
+              {/* Ask Follow-Up Question Form */}
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (chatInput.trim()) runAgentQuery(chatInput);
+                }}
+                style={{ display: 'flex', gap: '8px' }}
+              >
+                <input
+                  type="text"
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  placeholder="Ask anything about this lecture session (e.g., kahan video chhoota, kitni der dekha)..."
+                  disabled={agentLoading}
+                  style={{
+                    flex: 1,
+                    background: '#0b0f19',
+                    border: '1px solid #2e3c54',
+                    borderRadius: '8px',
+                    padding: '10px 14px',
+                    color: '#f8fafc',
+                    fontSize: '13px'
+                  }}
+                />
+                <button
+                  type="submit"
+                  disabled={agentLoading || !chatInput.trim()}
+                  style={{
+                    background: !agentLoading && chatInput.trim() ? '#2563eb' : '#1e293b',
+                    border: 'none',
+                    color: !agentLoading && chatInput.trim() ? '#fff' : '#64748b',
+                    padding: '10px 18px',
+                    borderRadius: '8px',
+                    fontSize: '13px',
+                    fontWeight: 600,
+                    cursor: !agentLoading && chatInput.trim() ? 'pointer' : 'not-allowed'
+                  }}
+                >
+                  Ask Agent
+                </button>
+              </form>
             </div>
 
             {/* Interactive Timeline Visualizer */}
