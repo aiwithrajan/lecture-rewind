@@ -1,6 +1,7 @@
 node_modules/
 dist/
 out/
+src/renderer/public/mediapipe/
 .env.local
 .DS_Store
 *.log

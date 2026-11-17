@@ -14,6 +14,8 @@ import { EvidenceEvaluator } from '../engine/EvidenceEvaluator';
 import { QualityRibbon } from '../engine/QualityRibbon';
 import { QueueBuilder } from '../engine/QueueBuilder';
 import { SignalProvider } from '../providers/SignalProvider';
+import { SmartSpectraProvider } from '../providers/SmartSpectraProvider';
+import { SimulatedTraceProvider } from '../providers/SimulatedTraceProvider';
 
 interface PlayerScreenProps {
   source: VideoSource;
@@ -57,17 +59,32 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
   const [chapters, setChapters] = useState<ChapterInfo[]>(source.chapters || []);
   const [currentChapterTitle, setCurrentChapterTitle] = useState<string>('');
 
-  // Live Camera PIP Preview state
+  // Live Camera PIP Preview & Real-Time Blink Counter state
+  const isSimulatedProvider = provider instanceof SimulatedTraceProvider;
   const [isCameraPipOpen, setIsCameraPipOpen] = useState(true);
   const [isPipMinimized, setIsPipMinimized] = useState(false);
   const [hasWebcamStream, setHasWebcamStream] = useState(false);
+  const [faceDetected, setFaceDetected] = useState(false);
   const [liveClosedDuration, setLiveClosedDuration] = useState(0);
   const [livePitch, setLivePitch] = useState(0);
   const [liveYaw, setLiveYaw] = useState(0);
+  const [blinkCount, setBlinkCount] = useState(0);
+  const [blinkFlash, setBlinkFlash] = useState(false);
+  const [effectiveThreshold, setEffectiveThreshold] = useState(calibration.closureThreshold);
   const earHistoryRef = useRef<number[]>([]);
   const pipVideoRef = useRef<HTMLVideoElement | null>(null);
   const pipCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const webcamStreamRef = useRef<MediaStream | null>(null);
+
+  // Adaptive blink edge detector refs (immune to React closure staleness)
+  const effectiveThresholdRef = useRef<number>(calibration.closureThreshold);
+  const adaptiveOpenEarRef = useRef<number>(calibration.baselineEar || 0.28);
+  const openEarSeedSamplesRef = useRef<number[]>([]);
+  const hasAdaptedDefaultCalibRef = useRef<boolean>(false);
+  const isEyeClosedForBlinkRef = useRef<boolean>(false);
+  const eyeClosedStartMsRef = useRef<number>(0);
+  const lastBlinkEndMsRef = useRef<number>(0);
+  const blinkFlashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const startTimeRef = useRef<string>(new Date().toISOString());
 
@@ -158,19 +175,32 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
 
   // Setup state machine & signal subscribers
   useEffect(() => {
+    const mapEventToVideoTime = (ev: DetectionEvent): DetectionEvent => {
+      const videoNow = videoRef.current?.currentTime;
+      if (typeof videoNow === 'number' && Number.isFinite(videoNow)) {
+        const dur = Math.max(0, ev.end - ev.start);
+        return {
+          ...ev,
+          start: Math.max(0, videoNow - dur),
+          end: videoNow
+        };
+      }
+      return ev;
+    };
+
     const sm = new AbsenceStateMachine({
       onStateChange: (newState) => {
         setAbsenceState(newState);
       },
       onPauseRequested: (pauseEv) => {
         pausePlayback();
-        setEvents((prev) => [...prev, pauseEv]);
+        setEvents((prev) => [...prev, mapEventToVideoTime(pauseEv)]);
       },
       onMarkerEmitted: (markerEv) => {
-        setEvents((prev) => [...prev, markerEv]);
+        setEvents((prev) => [...prev, mapEventToVideoTime(markerEv)]);
       },
       onBookmarkEmitted: (bmEv) => {
-        setEvents((prev) => [...prev, bmEv]);
+        setEvents((prev) => [...prev, mapEventToVideoTime(bmEv)]);
       }
     });
 
@@ -185,17 +215,23 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
       });
     }
 
-    // Start signal stream (ensures real-time detection runs continuously)
+    // Clear any stale listeners from calibration screen and ensure provider is running
+    provider.clearFrameListeners?.();
+    if (provider instanceof SmartSpectraProvider) {
+      provider.setBlinkThreshold(calibration.closureThreshold);
+    }
     provider.start().catch(() => {});
 
     // Subscribe to frames from provider
     provider.onFrame((frame) => {
-      // Synchronize frame with video playback time
-      const videoTs = videoRef.current ? videoRef.current.currentTime : frame.timestamp;
-      const syncedFrame = { ...frame, timestamp: videoTs };
+      // Use monotonic provider timestamp for detection timers so eye-closure & blink tracking
+      // work continuously even when the lecture video is paused or unstarted.
+      const videoTs = videoRef.current && videoRef.current.currentTime > 0
+        ? videoRef.current.currentTime
+        : frame.timestamp;
 
-      // Record quality bucket
-      qualityRibbonRef.current.addFrame(syncedFrame);
+      // Record quality bucket against video timeline
+      qualityRibbonRef.current.addFrame({ ...frame, timestamp: videoTs });
 
       // Record pulse context if available
       if (frame.pulseRate) {
@@ -205,8 +241,10 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
         ]);
       }
 
-      // Evaluate detection rules
-      const evidence = evaluatorRef.current.evaluateFrame(syncedFrame);
+      // Evaluate detection rules using monotonic frame.timestamp
+      const evidence = evaluatorRef.current.evaluateFrame(frame);
+      const hasFace = Boolean(frame.landmarks && frame.landmarks.length >= 468);
+      setFaceDetected(hasFace);
       setCurrentEar(evidence.ear);
       setLiveClosedDuration(evidence.closedDurationSec);
       if (evidence.relativePose) {
@@ -214,16 +252,84 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
         setLiveYaw(evidence.relativePose.yaw);
       }
 
-      // Track rolling EAR history for live waveform graph
+      // Real-time adaptive blink detector & threshold tracking
+      let activeCloseThr = calibration.closureThreshold;
       if (evidence.ear !== null) {
-        earHistoryRef.current.push(evidence.ear);
+        const ear = evidence.ear;
+
+        // Seed adaptive open-eye baseline from initial frames so skipped calibrations still lock on
+        if (openEarSeedSamplesRef.current.length < 15 && ear > 0.18) {
+          openEarSeedSamplesRef.current.push(ear);
+          const sorted = [...openEarSeedSamplesRef.current].sort((a, b) => a - b);
+          const median = sorted[Math.floor(sorted.length * 0.7)];
+          adaptiveOpenEarRef.current = median;
+
+          // If user skipped straight through with default calibration (0.28 / 0.18),
+          // align evaluator's closure threshold to the real webcam geometry once seeded
+          if (
+            openEarSeedSamplesRef.current.length === 15 &&
+            !hasAdaptedDefaultCalibRef.current &&
+            calibration.baselineEar === 0.28 &&
+            calibration.closureThreshold === 0.18 &&
+            Math.abs(median - 0.28) > 0.03
+          ) {
+            hasAdaptedDefaultCalibRef.current = true;
+            const adaptedThr = Number((median * 0.70).toFixed(4));
+            effectiveThresholdRef.current = adaptedThr;
+            evaluatorRef.current.updateCalibration({
+              ...calibration,
+              baselineEar: Number(median.toFixed(4)),
+              closureThreshold: adaptedThr
+            });
+            setEffectiveThreshold(adaptedThr);
+          }
+        } else if (ear > adaptiveOpenEarRef.current * 0.85) {
+          // Gentle EMA tracking of natural open-eye aperture
+          adaptiveOpenEarRef.current = adaptiveOpenEarRef.current * 0.97 + ear * 0.03;
+        }
+
+        // Hysteresis thresholds catch fast 1-frame webcam blinks cleanly without noise chatter
+        activeCloseThr = Math.max(effectiveThresholdRef.current, adaptiveOpenEarRef.current * 0.75);
+        const activeOpenThr = Math.max(activeCloseThr + 0.012, adaptiveOpenEarRef.current * 0.81);
+
+        if (provider instanceof SmartSpectraProvider) {
+          provider.setBlinkThreshold(activeCloseThr);
+        }
+
+        const nowMs = performance.now();
+        if (ear < activeCloseThr) {
+          if (!isEyeClosedForBlinkRef.current) {
+            isEyeClosedForBlinkRef.current = true;
+            eyeClosedStartMsRef.current = nowMs;
+          }
+        } else if (ear >= activeOpenThr && isEyeClosedForBlinkRef.current) {
+          isEyeClosedForBlinkRef.current = false;
+          const closedMs = nowMs - eyeClosedStartMsRef.current;
+          const sinceLastBlinkMs = nowMs - lastBlinkEndMsRef.current;
+
+          // Count distinct blinks (30ms - 2000ms closure, 160ms refractory debounce)
+          if (closedMs >= 30 && closedMs <= 2000 && sinceLastBlinkMs >= 160) {
+            lastBlinkEndMsRef.current = nowMs;
+            setBlinkCount((c) => c + 1);
+            setBlinkFlash(true);
+            if (blinkFlashTimerRef.current) {
+              clearTimeout(blinkFlashTimerRef.current);
+            }
+            blinkFlashTimerRef.current = setTimeout(() => {
+              setBlinkFlash(false);
+            }, 350);
+          }
+        }
+
+        // Track rolling EAR history for live waveform graph
+        earHistoryRef.current.push(ear);
         if (earHistoryRef.current.length > 50) {
           earHistoryRef.current.shift();
         }
       }
 
       // Draw real-time computer vision detection mesh on PIP canvas
-      if (pipCanvasRef.current && frame.landmarks && frame.landmarks.length >= 468) {
+      if (pipCanvasRef.current) {
         const canvas = pipCanvasRef.current;
         const ctx = canvas.getContext('2d');
         if (ctx) {
@@ -231,94 +337,112 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
           const H = canvas.height;
           ctx.clearRect(0, 0, W, H);
 
-          const lm = frame.landmarks;
-          const isClosed = evidence.ear !== null && evidence.ear < calibration.closureThreshold;
+          const isClosed = evidence.ear !== null && evidence.ear < activeCloseThr;
 
-          // 1. Face targeting corner brackets
-          const bx = W * 0.18;
-          const by = H * 0.12;
-          const bw = W * 0.64;
-          const bh = H * 0.58;
-          ctx.strokeStyle = isClosed ? '#f43f5e' : '#38bdf8';
-          ctx.lineWidth = 1.2;
-          const cLen = 14;
-          ctx.beginPath();
-          ctx.moveTo(bx, by + cLen); ctx.lineTo(bx, by); ctx.lineTo(bx + cLen, by);
-          ctx.moveTo(bx + bw - cLen, by); ctx.lineTo(bx + bw, by); ctx.lineTo(bx + bw, by + cLen);
-          ctx.moveTo(bx, by + bh - cLen); ctx.lineTo(bx, by + bh); ctx.lineTo(bx + cLen, by + bh);
-          ctx.moveTo(bx + bw - cLen, by + bh); ctx.lineTo(bx + bw, by + bh); ctx.lineTo(bx + bw, by + bh - cLen);
-          ctx.stroke();
+          if (hasFace && frame.landmarks) {
+            const lm = frame.landmarks;
 
-          // 2. Eye polygon contour loops
-          ctx.strokeStyle = isClosed ? '#f43f5e' : '#38bdf8';
-          ctx.lineWidth = isClosed ? 2.0 : 1.5;
+            // Mirror ONLY the facial landmark overlay so it aligns with mirrored <video>
+            ctx.save();
+            ctx.translate(W, 0);
+            ctx.scale(-1, 1);
 
-          const drawRing = (indices: number[]) => {
+            // 1. Face targeting corner brackets
+            const bx = W * 0.18;
+            const by = H * 0.10;
+            const bw = W * 0.64;
+            const bh = H * 0.60;
+            ctx.strokeStyle = isClosed ? '#f43f5e' : '#38bdf8';
+            ctx.lineWidth = 1.2;
+            const cLen = 14;
             ctx.beginPath();
-            indices.forEach((idx, i) => {
-              const pt = lm[idx];
-              if (!pt) return;
-              const x = pt.x * W;
-              const y = pt.y * H;
-              if (i === 0) ctx.moveTo(x, y);
-              else ctx.lineTo(x, y);
-            });
-            ctx.closePath();
+            ctx.moveTo(bx, by + cLen); ctx.lineTo(bx, by); ctx.lineTo(bx + cLen, by);
+            ctx.moveTo(bx + bw - cLen, by); ctx.lineTo(bx + bw, by); ctx.lineTo(bx + bw, by + cLen);
+            ctx.moveTo(bx, by + bh - cLen); ctx.lineTo(bx, by + bh); ctx.lineTo(bx + cLen, by + bh);
+            ctx.moveTo(bx + bw - cLen, by + bh); ctx.lineTo(bx + bw, by + bh); ctx.lineTo(bx + bw, by + bh - cLen);
             ctx.stroke();
-          };
 
-          drawRing([33, 160, 158, 133, 153, 144]);
-          drawRing([362, 385, 387, 263, 373, 380]);
+            // 2. Eye polygon contour loops
+            ctx.strokeStyle = isClosed ? '#f43f5e' : '#38bdf8';
+            ctx.lineWidth = isClosed ? 2.2 : 1.6;
 
-          // Iris center tracking crosshairs
-          const leftCenter = lm[160];
-          if (leftCenter) {
-            ctx.fillStyle = isClosed ? '#f43f5e' : '#10b981';
-            ctx.beginPath();
-            ctx.arc(leftCenter.x * W, leftCenter.y * H, isClosed ? 1.5 : 2.5, 0, Math.PI * 2);
-            ctx.fill();
+            const drawRing = (indices: number[]) => {
+              ctx.beginPath();
+              indices.forEach((idx, i) => {
+                const pt = lm[idx];
+                if (!pt) return;
+                const x = pt.x * W;
+                const y = pt.y * H;
+                if (i === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+              });
+              ctx.closePath();
+              ctx.stroke();
+            };
+
+            drawRing([33, 160, 158, 133, 153, 144]);
+            drawRing([362, 385, 387, 263, 373, 380]);
+
+            // Iris center tracking dots
+            const leftCenter = lm[160];
+            if (leftCenter) {
+              ctx.fillStyle = isClosed ? '#f43f5e' : '#10b981';
+              ctx.beginPath();
+              ctx.arc(leftCenter.x * W, leftCenter.y * H, isClosed ? 1.8 : 2.6, 0, Math.PI * 2);
+              ctx.fill();
+            }
+            const rightCenter = lm[385];
+            if (rightCenter) {
+              ctx.fillStyle = isClosed ? '#f43f5e' : '#10b981';
+              ctx.beginPath();
+              ctx.arc(rightCenter.x * W, rightCenter.y * H, isClosed ? 1.8 : 2.6, 0, Math.PI * 2);
+              ctx.fill();
+            }
+
+            // 3. Head pose vertical pitch vector (168 -> 152)
+            if (lm[168] && lm[152]) {
+              ctx.strokeStyle = '#6366f1';
+              ctx.lineWidth = 1.5;
+              ctx.beginPath();
+              ctx.moveTo(lm[168].x * W, lm[168].y * H);
+              ctx.lineTo(lm[152].x * W, lm[152].y * H);
+              ctx.stroke();
+            }
+
+            // 4. Head pose horizontal yaw vector (33 -> 263)
+            if (lm[33] && lm[263]) {
+              ctx.strokeStyle = '#38bdf8';
+              ctx.lineWidth = 1.0;
+              ctx.beginPath();
+              ctx.moveTo(lm[33].x * W, lm[33].y * H);
+              ctx.lineTo(lm[263].x * W, lm[263].y * H);
+              ctx.stroke();
+            }
+
+            ctx.restore();
+          } else {
+            // Clear warning badge when face is not visible
+            ctx.fillStyle = 'rgba(245, 158, 11, 0.85)';
+            ctx.font = 'bold 11px ui-monospace, monospace';
+            ctx.textAlign = 'center';
+            ctx.fillText('NO FACE DETECTED', W / 2, H * 0.42);
           }
-          const rightCenter = lm[385];
-          if (rightCenter) {
-            ctx.fillStyle = isClosed ? '#f43f5e' : '#10b981';
-            ctx.beginPath();
-            ctx.arc(rightCenter.x * W, rightCenter.y * H, isClosed ? 1.5 : 2.5, 0, Math.PI * 2);
-            ctx.fill();
-          }
 
-          // 3. Head pose vertical pitch vector (168 -> 152)
-          if (lm[168] && lm[152]) {
-            ctx.strokeStyle = '#6366f1';
-            ctx.lineWidth = 1.5;
-            ctx.beginPath();
-            ctx.moveTo(lm[168].x * W, lm[168].y * H);
-            ctx.lineTo(lm[152].x * W, lm[152].y * H);
-            ctx.stroke();
-          }
-
-          // 4. Head pose horizontal yaw vector (33 -> 263)
-          if (lm[33] && lm[263]) {
-            ctx.strokeStyle = '#38bdf8';
-            ctx.lineWidth = 1.0;
-            ctx.beginPath();
-            ctx.moveTo(lm[33].x * W, lm[33].y * H);
-            ctx.lineTo(lm[263].x * W, lm[263].y * H);
-            ctx.stroke();
-          }
-
-          // 5. Real-Time Scrolling EAR Waveform Graph (bottom 32px of canvas)
-          const graphH = 32;
+          // 5. Real-Time Scrolling EAR Waveform Graph (un-flipped left-to-right, bottom 34px)
+          const graphH = 34;
           const graphY = H - graphH;
-          ctx.fillStyle = 'rgba(7, 10, 18, 0.85)';
+          ctx.fillStyle = 'rgba(7, 10, 18, 0.88)';
           ctx.fillRect(0, graphY, W, graphH);
           ctx.strokeStyle = '#1e293b';
+          ctx.lineWidth = 1;
           ctx.strokeRect(0, graphY, W, graphH);
 
-          // Threshold dashed line
+          // Dynamic scale adapts cleanly to user's actual open EAR range
           const minEar = 0.05;
-          const maxEar = 0.38;
-          const normY = (v: number) => graphY + graphH - Math.max(3, Math.min(graphH - 4, ((v - minEar) / (maxEar - minEar)) * (graphH - 6)));
-          const thrY = normY(calibration.closureThreshold);
+          const maxEar = Math.max(0.40, adaptiveOpenEarRef.current + 0.08);
+          const normY = (v: number) =>
+            graphY + graphH - Math.max(3, Math.min(graphH - 4, ((v - minEar) / (maxEar - minEar)) * (graphH - 6)));
+          const thrY = normY(activeCloseThr);
 
           ctx.save();
           ctx.setLineDash([3, 3]);
@@ -330,13 +454,13 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
           ctx.stroke();
           ctx.restore();
 
-          // EAR wave path
+          // Left-to-right EAR wave path
           const history = earHistoryRef.current;
           if (history.length > 1) {
             ctx.lineWidth = 1.8;
             ctx.beginPath();
             history.forEach((val, i) => {
-              const x = (i / 50) * W;
+              const x = (i / 49) * W;
               const y = normY(val);
               if (i === 0) ctx.moveTo(x, y);
               else ctx.lineTo(x, y);
@@ -346,29 +470,61 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
 
             // Leading wave pulse dot
             const lastVal = history[history.length - 1];
-            const lastX = ((history.length - 1) / 50) * W;
+            const lastX = ((history.length - 1) / 49) * W;
             const lastY = normY(lastVal);
             ctx.fillStyle = isClosed ? '#f43f5e' : '#10b981';
             ctx.beginPath();
             ctx.arc(lastX, lastY, 3, 0, Math.PI * 2);
             ctx.fill();
           }
+
+          // Subtle graph label
+          ctx.fillStyle = '#64748b';
+          ctx.font = '9px ui-monospace, monospace';
+          ctx.textAlign = 'left';
+          ctx.fillText('EAR LIVE', 5, graphY + 10);
         }
       }
 
-      // Run state machine
-      sm.processFrame(evidence, syncedFrame);
+      // Run state machine with monotonic frame.timestamp
+      sm.processFrame(evidence, frame);
     });
 
     return () => {
+      if (blinkFlashTimerRef.current) {
+        clearTimeout(blinkFlashTimerRef.current);
+      }
+      provider.clearFrameListeners?.();
+      if (provider instanceof SmartSpectraProvider) {
+        provider.setOnStreamAvailable(undefined);
+      }
       provider.stop();
     };
-  }, [provider, pausePlayback, source.pathOrUrl, calibration.closureThreshold]);
+  }, [provider, pausePlayback, source.pathOrUrl, calibration]);
 
-  // Acquire local webcam stream for picture-in-picture box
+  // Attach webcam stream to PIP video (reuses SmartSpectraProvider stream to avoid duplicate getUserMedia)
   useEffect(() => {
     let active = true;
-    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+    let ownsStandaloneStream = false;
+
+    const attachStream = (stream: MediaStream) => {
+      if (!active) return;
+      webcamStreamRef.current = stream;
+      setHasWebcamStream(true);
+      if (pipVideoRef.current) {
+        pipVideoRef.current.srcObject = stream;
+        pipVideoRef.current.play().catch(() => {});
+      }
+    };
+
+    if (provider instanceof SmartSpectraProvider) {
+      const existing = provider.getMediaStream();
+      if (existing) {
+        attachStream(existing);
+      }
+      provider.setOnStreamAvailable(attachStream);
+    } else if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      // Optional visual webcam preview in Simulated Mode
       navigator.mediaDevices
         .getUserMedia({ video: { width: 320, height: 240 } })
         .then((stream) => {
@@ -376,12 +532,8 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
             stream.getTracks().forEach((t) => t.stop());
             return;
           }
-          webcamStreamRef.current = stream;
-          setHasWebcamStream(true);
-          if (pipVideoRef.current) {
-            pipVideoRef.current.srcObject = stream;
-            pipVideoRef.current.play().catch(() => {});
-          }
+          ownsStandaloneStream = true;
+          attachStream(stream);
         })
         .catch(() => {
           setHasWebcamStream(false);
@@ -390,12 +542,22 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
 
     return () => {
       active = false;
-      if (webcamStreamRef.current) {
+      if (ownsStandaloneStream && webcamStreamRef.current) {
         webcamStreamRef.current.getTracks().forEach((t) => t.stop());
         webcamStreamRef.current = null;
       }
     };
-  }, []);
+  }, [provider]);
+
+  // Re-attach webcam stream when PIP box is expanded or reopened
+  useEffect(() => {
+    if (isCameraPipOpen && !isPipMinimized && pipVideoRef.current && webcamStreamRef.current) {
+      if (pipVideoRef.current.srcObject !== webcamStreamRef.current) {
+        pipVideoRef.current.srcObject = webcamStreamRef.current;
+      }
+      pipVideoRef.current.play().catch(() => {});
+    }
+  }, [isCameraPipOpen, isPipMinimized, hasWebcamStream]);
 
   // Update guard and notes mode in engine
   useEffect(() => {
@@ -553,6 +715,19 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
                 EAR: {currentEar.toFixed(2)}
               </span>
             )}
+            <span style={{
+              fontSize: '11px',
+              fontFamily: 'monospace',
+              fontWeight: 700,
+              padding: '2px 8px',
+              borderRadius: '10px',
+              background: blinkFlash ? 'rgba(16, 185, 129, 0.35)' : 'rgba(56, 189, 248, 0.14)',
+              border: `1px solid ${blinkFlash ? '#10b981' : '#38bdf8'}`,
+              color: blinkFlash ? '#6ee7b7' : '#38bdf8',
+              transition: 'all 0.15s ease'
+            }}>
+              Blinks: {blinkCount}
+            </span>
           </div>
 
           {/* Notes Mode Toggle (N key) */}
@@ -801,8 +976,21 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
                   boxShadow: `0 0 8px ${getStatusColor()}`
                 }} />
                 <span style={{ fontSize: '11px', fontWeight: 700, color: '#f8fafc', letterSpacing: '0.5px' }}>
-                  {hasWebcamStream ? 'LIVE WEBCAM HUD' : 'REAL-TIME TRACKING HUD'}
+                  {isSimulatedProvider ? 'SIMULATED TRACE HUD' : hasWebcamStream ? 'LIVE WEBCAM (478-PT)' : 'REAL-TIME TRACKING HUD'}
                 </span>
+                {blinkFlash && (
+                  <span style={{
+                    fontSize: '9px',
+                    fontWeight: 800,
+                    background: '#10b981',
+                    color: '#06281c',
+                    padding: '1px 5px',
+                    borderRadius: '4px',
+                    fontFamily: 'monospace'
+                  }}>
+                    BLINK!
+                  </span>
+                )}
               </div>
 
               <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
@@ -870,7 +1058,9 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
                       </div>
                     </div>
                   ) : (
-                    <span>TRACKING: ACTIVE | PITCH: {livePitch >= 0 ? '+' : ''}{livePitch.toFixed(0)}° | YAW: {liveYaw >= 0 ? '+' : ''}{liveYaw.toFixed(0)}°</span>
+                    <span>
+                      {faceDetected ? 'FACE LOCKED' : 'SEARCHING...'} | PITCH: {livePitch >= 0 ? '+' : ''}{livePitch.toFixed(0)}° | YAW: {liveYaw >= 0 ? '+' : ''}{liveYaw.toFixed(0)}°
+                    </span>
                   )}
                 </div>
 
@@ -890,7 +1080,7 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
                     }}
                   />
 
-                  {/* Tracking Mesh & Waveform Canvas */}
+                  {/* Tracking Mesh (mirrored in 2D ctx) & Un-flipped Left-to-Right EAR Waveform Canvas */}
                   <canvas
                     ref={pipCanvasRef}
                     width={310}
@@ -900,8 +1090,7 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
                       inset: 0,
                       width: '100%',
                       height: '100%',
-                      pointerEvents: 'none',
-                      transform: 'scaleX(-1)'
+                      pointerEvents: 'none'
                     }}
                   />
 
@@ -929,7 +1118,7 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
                 <div style={{
                   background: 'rgba(11, 15, 25, 0.95)',
                   borderTop: '1px solid #1e293b',
-                  padding: '3px 8px',
+                  padding: '4px 8px',
                   display: 'flex',
                   justifyContent: 'space-between',
                   alignItems: 'center',
@@ -937,93 +1126,131 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
                   fontFamily: 'monospace'
                 }}>
                   <span style={{
-                    color: currentEar !== null && currentEar < calibration.closureThreshold ? '#f43f5e' : '#38bdf8',
+                    color: blinkFlash ? '#10b981' : '#f8fafc',
+                    fontWeight: 800,
+                    background: blinkFlash ? 'rgba(16, 185, 129, 0.25)' : 'rgba(56, 189, 248, 0.15)',
+                    padding: '1px 6px',
+                    borderRadius: '4px'
+                  }}>
+                    BLINKS: {blinkCount}
+                  </span>
+                  <span style={{
+                    color: currentEar !== null && currentEar < effectiveThreshold ? '#f43f5e' : '#38bdf8',
                     fontWeight: 700
                   }}>
                     EAR: {currentEar !== null ? currentEar.toFixed(2) : '--'}
                   </span>
                   <span style={{ color: '#94a3b8' }}>
-                    THR: {calibration.closureThreshold.toFixed(2)}
+                    THR: {effectiveThreshold.toFixed(2)}
                   </span>
                   <span style={{ color: getStatusColor(), fontWeight: 700 }}>
                     {absenceState.toUpperCase()}
                   </span>
                 </div>
 
-                {/* Quick Simulation Trigger Buttons (1-Click Real-Time Testing) */}
-                <div style={{
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(4, 1fr)',
-                  gap: '4px',
-                  padding: '4px 6px',
-                  background: '#0b0f19',
-                  borderTop: '1px solid #1e293b'
-                }}>
-                  <button
-                    onClick={() => (provider as any).triggerBlink?.()}
-                    title="Simulate quick eye blink (Key 1)"
-                    style={{
-                      background: '#1e293b',
-                      border: '1px solid #334155',
-                      color: '#cbd5e1',
-                      padding: '3px 2px',
-                      borderRadius: '4px',
-                      fontSize: '10px',
-                      cursor: 'pointer',
-                      fontWeight: 500
-                    }}
-                  >
-                    Blink [1]
-                  </button>
-                  <button
-                    onClick={() => (provider as any).triggerBriefLapse?.(3.5)}
-                    title="Simulate 3.5s brief eye closure (Key 2 -> Marker)"
-                    style={{
-                      background: '#1e293b',
-                      border: '1px solid #f59e0b',
-                      color: '#f59e0b',
-                      padding: '3px 2px',
-                      borderRadius: '4px',
-                      fontSize: '10px',
-                      cursor: 'pointer',
-                      fontWeight: 500
-                    }}
-                  >
-                    3s Lapse [2]
-                  </button>
-                  <button
-                    onClick={() => (provider as any).triggerProlongedAbsence?.(6.5)}
-                    title="Simulate 6.5s prolonged closure (Key 3 -> Pause + Overlay)"
-                    style={{
-                      background: '#1e293b',
-                      border: '1px solid #f43f5e',
-                      color: '#f43f5e',
-                      padding: '3px 2px',
-                      borderRadius: '4px',
-                      fontSize: '10px',
-                      cursor: 'pointer',
-                      fontWeight: 600
-                    }}
-                  >
-                    6s Pause [3]
-                  </button>
-                  <button
-                    onClick={() => (provider as any).triggerHeadDrop?.(5.0)}
-                    title="Simulate head drop pitch below -20° (Key 4)"
-                    style={{
-                      background: '#1e293b',
-                      border: '1px solid #6366f1',
-                      color: '#818cf8',
-                      padding: '3px 2px',
-                      borderRadius: '4px',
-                      fontSize: '10px',
-                      cursor: 'pointer',
-                      fontWeight: 500
-                    }}
-                  >
-                    Head Drop [4]
-                  </button>
-                </div>
+                {/* Bottom Controls: Simulation Triggers (Simulated Mode) or Live Reset Bar (Live Mode) */}
+                {isSimulatedProvider ? (
+                  <div style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(4, 1fr)',
+                    gap: '4px',
+                    padding: '4px 6px',
+                    background: '#0b0f19',
+                    borderTop: '1px solid #1e293b'
+                  }}>
+                    <button
+                      onClick={() => (provider as any).triggerBlink?.()}
+                      title="Simulate quick eye blink (Key 1)"
+                      style={{
+                        background: '#1e293b',
+                        border: '1px solid #334155',
+                        color: '#cbd5e1',
+                        padding: '3px 2px',
+                        borderRadius: '4px',
+                        fontSize: '10px',
+                        cursor: 'pointer',
+                        fontWeight: 500
+                      }}
+                    >
+                      Blink [1]
+                    </button>
+                    <button
+                      onClick={() => (provider as any).triggerBriefLapse?.(3.5)}
+                      title="Simulate 3.5s brief eye closure (Key 2 -> Marker)"
+                      style={{
+                        background: '#1e293b',
+                        border: '1px solid #f59e0b',
+                        color: '#f59e0b',
+                        padding: '3px 2px',
+                        borderRadius: '4px',
+                        fontSize: '10px',
+                        cursor: 'pointer',
+                        fontWeight: 500
+                      }}
+                    >
+                      3s Lapse [2]
+                    </button>
+                    <button
+                      onClick={() => (provider as any).triggerProlongedAbsence?.(6.5)}
+                      title="Simulate 6.5s prolonged closure (Key 3 -> Pause + Overlay)"
+                      style={{
+                        background: '#1e293b',
+                        border: '1px solid #f43f5e',
+                        color: '#f43f5e',
+                        padding: '3px 2px',
+                        borderRadius: '4px',
+                        fontSize: '10px',
+                        cursor: 'pointer',
+                        fontWeight: 600
+                      }}
+                    >
+                      6s Pause [3]
+                    </button>
+                    <button
+                      onClick={() => (provider as any).triggerHeadDrop?.(5.0)}
+                      title="Simulate head drop pitch below -20° (Key 4)"
+                      style={{
+                        background: '#1e293b',
+                        border: '1px solid #6366f1',
+                        color: '#818cf8',
+                        padding: '3px 2px',
+                        borderRadius: '4px',
+                        fontSize: '10px',
+                        cursor: 'pointer',
+                        fontWeight: 500
+                      }}
+                    >
+                      Head Drop [4]
+                    </button>
+                  </div>
+                ) : (
+                  <div style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    padding: '4px 8px',
+                    background: '#0b0f19',
+                    borderTop: '1px solid #1e293b',
+                    fontSize: '10px',
+                    color: '#94a3b8'
+                  }}>
+                    <span>On-device 478-pt eye mesh active</span>
+                    <button
+                      onClick={() => setBlinkCount(0)}
+                      style={{
+                        background: '#1e293b',
+                        border: '1px solid #334155',
+                        color: '#cbd5e1',
+                        padding: '2px 7px',
+                        borderRadius: '4px',
+                        fontSize: '10px',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      Reset Blinks
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </div>

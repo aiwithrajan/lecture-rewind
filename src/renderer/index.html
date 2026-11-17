@@ -3,8 +3,9 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; media-src 'self' blob: file:; img-src 'self' data: blob:; connect-src 'self' ws://localhost:* http://localhost:* ws://127.0.0.1:* http://127.0.0.1:* https://*.presagetech.com;" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob:; style-src 'self' 'unsafe-inline'; media-src 'self' blob: file:; img-src 'self' data: blob:; connect-src 'self' data: blob: ws://localhost:* http://localhost:* ws://127.0.0.1:* http://127.0.0.1:* https://*.presagetech.com;" />
     <title>Lecture Rewind</title>
+    <script src="./mediapipe/face_mesh/face_mesh.js"></script>
     <style>
       :root {
         --bg-main: #0b0f19;

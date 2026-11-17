@@ -10,6 +10,7 @@ export interface SignalProvider {
   start(): Promise<void>;
   stop(): Promise<void>;
   onFrame(callback: FrameCallback): void;
+  clearFrameListeners?(): void;
   onError(callback: ErrorCallback): void;
   getIsRunning(): boolean;
 }

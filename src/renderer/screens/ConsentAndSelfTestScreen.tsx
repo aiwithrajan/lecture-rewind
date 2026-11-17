@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { CalibrationResult, SignalFrame, VideoSource } from '@shared/types';
 import { SelfTestCalibrator } from '../engine/SelfTestCalibrator';
+import { computeCompositeEAR } from '../engine/LandmarkGeometry';
 import { SignalProvider } from '../providers/SignalProvider';
 import { SimulatedTraceProvider } from '../providers/SimulatedTraceProvider';
 import { SmartSpectraProvider } from '../providers/SmartSpectraProvider';
@@ -25,8 +26,11 @@ export const ConsentAndSelfTestScreen: React.FC<ConsentAndSelfTestScreenProps> =
 
   // Self-test sequence state
   const [testPhase, setTestPhase] = useState<'neutral' | 'closure1' | 'reopen' | 'closure2' | 'pose'>('neutral');
+  const testPhaseRef = useRef<'neutral' | 'closure1' | 'reopen' | 'closure2' | 'pose'>('neutral');
   const [testSecondsRemaining, setTestSecondsRemaining] = useState(20);
   const [promptMessage, setPromptMessage] = useState('Look at the screen with relaxed neutral posture.');
+  const [liveEar, setLiveEar] = useState<number | null>(null);
+  const [faceDetected, setFaceDetected] = useState(false);
 
   // Captured calibration data
   const neutralFramesRef = useRef<SignalFrame[]>([]);
@@ -34,14 +38,21 @@ export const ConsentAndSelfTestScreen: React.FC<ConsentAndSelfTestScreenProps> =
   const [calibrationResult, setCalibrationResult] = useState<CalibrationResult | null>(null);
   const [sensitivity, setSensitivity] = useState(6.0);
 
-  // Provider and video preview
+  // Provider, timer, handoff, and video preview
   const videoPreviewRef = useRef<HTMLVideoElement | null>(null);
   const providerRef = useRef<SignalProvider | null>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const handedOffRef = useRef<boolean>(false);
 
   useEffect(() => {
     return () => {
-      // Clean up provider if unmounted
-      if (providerRef.current) {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+      // Only stop provider on cancel/abort; keep it warm when handing off to PlayerScreen
+      if (providerRef.current && !handedOffRef.current) {
+        providerRef.current.clearFrameListeners?.();
         providerRef.current.stop();
       }
     };
@@ -97,46 +108,73 @@ export const ConsentAndSelfTestScreen: React.FC<ConsentAndSelfTestScreenProps> =
       }
     }
 
-    // Subscribe to incoming signal frames during self-test
+    // Subscribe to incoming signal frames during self-test (uses ref to avoid stale closure)
     provider.onFrame((frame) => {
-      if (testPhase === 'neutral') {
+      const ear = computeCompositeEAR(frame.landmarks);
+      setLiveEar(ear);
+      setFaceDetected(Boolean(frame.landmarks && frame.landmarks.length >= 468));
+
+      const phase = testPhaseRef.current;
+      if (phase === 'neutral' || phase === 'reopen') {
         neutralFramesRef.current.push(frame);
-      } else if (testPhase === 'closure1' || testPhase === 'closure2') {
+      } else if (phase === 'closure1' || phase === 'closure2') {
         closureFramesRef.current.push(frame);
       }
     });
 
     // Run 20-second guided timer
+    testPhaseRef.current = 'neutral';
+    setTestPhase('neutral');
     let elapsed = 0;
-    const interval = setInterval(() => {
+    timerRef.current = setInterval(() => {
       elapsed++;
-      setTestSecondsRemaining(20 - elapsed);
+      setTestSecondsRemaining(Math.max(0, 20 - elapsed));
 
       if (elapsed < 5) {
+        testPhaseRef.current = 'neutral';
         setTestPhase('neutral');
         setPromptMessage('Step 1/4: Look directly at the screen in your natural posture.');
       } else if (elapsed >= 5 && elapsed < 9) {
+        testPhaseRef.current = 'closure1';
         setTestPhase('closure1');
         setPromptMessage('Step 2/4: Close both eyes gently until prompted.');
       } else if (elapsed >= 9 && elapsed < 13) {
+        testPhaseRef.current = 'reopen';
         setTestPhase('reopen');
         setPromptMessage('Step 3/4: Open your eyes and face forward.');
       } else if (elapsed >= 13 && elapsed < 17) {
+        testPhaseRef.current = 'closure2';
         setTestPhase('closure2');
         setPromptMessage('Step 4/4: Close your eyes again for confirmation.');
       } else if (elapsed >= 17 && elapsed < 20) {
+        testPhaseRef.current = 'pose';
         setTestPhase('pose');
         setPromptMessage('Finishing: Hold still while we verify head pose tracking.');
       } else if (elapsed >= 20) {
-        clearInterval(interval);
+        if (timerRef.current) {
+          clearInterval(timerRef.current);
+          timerRef.current = null;
+        }
         finalizeSelfTest();
       }
     }, 1000);
   };
 
   const finalizeSelfTest = () => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+
+    const hadRealNeutralFrames = neutralFramesRef.current.some(
+      (f) => f.landmarks && f.landmarks.length >= 468
+    );
+    const hadRealClosureFrames = closureFramesRef.current.some(
+      (f) => f.landmarks && f.landmarks.length >= 468
+    );
+
     // If no real frames collected, synthesize from deterministic templates
-    if (neutralFramesRef.current.length === 0) {
+    if (!hadRealNeutralFrames) {
       const openTemplate = stagedTraceJson.templates.openUpright;
       for (let i = 0; i < 15; i++) {
         neutralFramesRef.current.push({
@@ -147,7 +185,7 @@ export const ConsentAndSelfTestScreen: React.FC<ConsentAndSelfTestScreenProps> =
       }
     }
 
-    if (closureFramesRef.current.length === 0) {
+    if (!hadRealClosureFrames) {
       const closedTemplate = stagedTraceJson.templates.closedUpright;
       for (let i = 0; i < 10; i++) {
         closureFramesRef.current.push({
@@ -164,6 +202,12 @@ export const ConsentAndSelfTestScreen: React.FC<ConsentAndSelfTestScreenProps> =
       latencyMeasurementsMs: [180, 210, 195],
       userSensitivity: sensitivity
     });
+
+    // If user skipped before closure prompts but we captured live neutral frames,
+    // anchor closureThreshold proportionally to their real camera open EAR
+    if (hadRealNeutralFrames && !hadRealClosureFrames) {
+      result.closureThreshold = Number((result.baselineEar * 0.70).toFixed(4));
+    }
 
     setCalibrationResult(result);
     setStep('results');
@@ -182,6 +226,13 @@ export const ConsentAndSelfTestScreen: React.FC<ConsentAndSelfTestScreenProps> =
   const handleProceedToPlayback = () => {
     const finalCalib = calibrationResult || SelfTestCalibrator.getDefaultCalibration(sensitivity);
     const provider = providerRef.current || new SimulatedTraceProvider();
+    // Clear self-test listener and hand off the active provider warm to PlayerScreen
+    provider.clearFrameListeners?.();
+    if (provider instanceof SmartSpectraProvider) {
+      provider.setOnStreamAvailable(undefined);
+      provider.setBlinkThreshold(finalCalib.closureThreshold);
+    }
+    handedOffRef.current = true;
     onCalibrationComplete(finalCalib, provider);
   };
 
@@ -319,7 +370,7 @@ export const ConsentAndSelfTestScreen: React.FC<ConsentAndSelfTestScreenProps> =
               ref={videoPreviewRef}
               muted
               playsInline
-              style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+              style={{ width: '100%', height: '100%', objectFit: 'cover', transform: 'scaleX(-1)' }}
             />
             <div style={{
               position: 'absolute',
@@ -332,7 +383,28 @@ export const ConsentAndSelfTestScreen: React.FC<ConsentAndSelfTestScreenProps> =
               color: '#38bdf8',
               fontFamily: 'monospace'
             }}>
-              {simulatedMode ? 'MODE: SYNTHETIC REPLAY HARNESS' : 'CAMERA: LIVE WEBCAM FEED'}
+              {simulatedMode ? 'MODE: SYNTHETIC REPLAY HARNESS' : 'CAMERA: LIVE WEBCAM (478-PT MESH)'}
+            </div>
+            <div style={{
+              position: 'absolute',
+              bottom: '16px',
+              left: '16px',
+              right: '16px',
+              background: 'rgba(15, 23, 42, 0.88)',
+              border: `1px solid ${faceDetected ? '#10b981' : '#f59e0b'}`,
+              padding: '8px 12px',
+              borderRadius: '8px',
+              fontSize: '12px',
+              fontFamily: 'monospace',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              color: faceDetected ? '#10b981' : '#f59e0b'
+            }}>
+              <span>{faceDetected ? '● FACE LOCKED' : '○ SEARCHING FOR FACE...'}</span>
+              <span style={{ color: '#f8fafc' }}>
+                LIVE EAR: {liveEar !== null ? liveEar.toFixed(3) : '--'}
+              </span>
             </div>
           </div>
 

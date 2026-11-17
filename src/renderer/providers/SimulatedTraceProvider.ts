@@ -37,6 +37,10 @@ export class SimulatedTraceProvider implements SignalProvider {
     this.frameCallbacks.push(callback);
   }
 
+  public clearFrameListeners(): void {
+    this.frameCallbacks = [];
+  }
+
   public onError(callback: ErrorCallback): void {
     this.errorCallbacks.push(callback);
   }

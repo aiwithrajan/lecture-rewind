@@ -12,7 +12,7 @@ type ActiveScreen = 'home' | 'consent-selftest' | 'player' | 'review';
 
 export const App: React.FC = () => {
   const [screen, setScreen] = useState<ActiveScreen>('home');
-  const [simulatedMode, setSimulatedMode] = useState<boolean>(true); // FR-17: default true for easy zero-hardware testing
+  const [simulatedMode, setSimulatedMode] = useState<boolean>(false); // Live webcam detection active by default; FR-17 toggleable on HomeScreen
 
   // Active session context
   const [activeSource, setActiveSource] = useState<VideoSource | null>(null);

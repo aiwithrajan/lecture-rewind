@@ -4,7 +4,10 @@
   "description": "A rewind engine for recorded lectures that turns absent intervals into a recovery queue",
   "main": "./out/main/index.js",
   "scripts": {
+    "sync:mediapipe": "node -e \"const fs=require('fs');fs.mkdirSync('src/renderer/public/mediapipe/face_mesh',{recursive:true});fs.cpSync('node_modules/@mediapipe/face_mesh','src/renderer/public/mediapipe/face_mesh',{recursive:true});\"",
+    "predev": "npm run sync:mediapipe",
     "dev": "electron-vite dev",
+    "prebuild": "npm run sync:mediapipe",
     "build": "electron-vite build",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test": "vitest run",
@@ -16,6 +19,7 @@
     "react-dom": "^18.2.0"
   },
   "devDependencies": {
+    "@mediapipe/face_mesh": "^0.4.1633559619",
     "@types/node": "^20.11.24",
     "@types/react": "^18.2.64",
     "@types/react-dom": "^18.2.21",

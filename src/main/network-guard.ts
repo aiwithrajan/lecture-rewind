@@ -42,6 +42,8 @@ export class NetworkGuard {
 
     if (
       url.startsWith('file:') ||
+      url.startsWith('blob:') ||
+      url.startsWith('data:') ||
       url.startsWith('devtools:') ||
       url.startsWith('chrome:') ||
       url.startsWith('chrome-extension:')
