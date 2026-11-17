@@ -223,7 +223,7 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
   });
   const [agentEngine, setAgentEngine] = useState<AgentEngineMode>('auto');
   const [selectedOllamaModel, setSelectedOllamaModel] = useState<string>('gemma:2b');
-  const [agentLanguage, setAgentLanguage] = useState<AgentLanguage>('hinglish');
+  const [agentLanguage, setAgentLanguage] = useState<AgentLanguage>('english');
   const [agentLoading, setAgentLoading] = useState<boolean>(false);
   const [agentMeta, setAgentMeta] = useState<Pick<AgentResponse, 'providerUsed' | 'modelUsed' | 'failoverReason'> | null>(null);
   const [chatMessages, setChatMessages] = useState<AgentChatMessage[]>([]);
@@ -696,8 +696,8 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
                       cursor: 'pointer'
                     }}
                   >
-                    <option value="hinglish">Hinglish</option>
                     <option value="english">English</option>
+                    <option value="hinglish">Hinglish</option>
                   </select>
 
                   <button
@@ -799,10 +799,10 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
               {/* Quick Question Chips */}
               <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                 {[
-                  'Kahan-kahan lecture miss hua?',
-                  'Kitni der watching aur kitni der absent tha?',
-                  'Sabse pehle kahan se rewatch karu?',
-                  'All events & bookmarks explain karo'
+                  'Where did I miss parts of the lecture?',
+                  'How long was I watching vs absent?',
+                  'Give me a step-by-step rewatch plan',
+                  'Explain all recorded events & bookmarks'
                 ].map((chip) => (
                   <button
                     key={chip}
@@ -835,7 +835,7 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
                   type="text"
                   value={chatInput}
                   onChange={(e) => setChatInput(e.target.value)}
-                  placeholder="Ask anything about this lecture session (e.g., kahan video chhoota, kitni der dekha)..."
+                  placeholder="Ask anything about this lecture session (e.g., missed timestamps, watching duration)..."
                   disabled={agentLoading}
                   style={{
                     flex: 1,

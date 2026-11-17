@@ -114,7 +114,7 @@ export class SessionReviewAgent {
   public async query(req: AgentRequest): Promise<AgentResponse> {
     const { geminiKey, ollamaUrl, defaultOllamaModel } = this.getConfig();
     const engine: AgentEngineMode = req.engine || 'auto';
-    const language: AgentLanguage = req.language || 'hinglish';
+    const language: AgentLanguage = req.language || 'english';
     const selectedOllamaModel = req.ollamaModel || defaultOllamaModel;
 
     const systemPrompt = this.buildSystemPrompt(req.session, language);
