@@ -29,6 +29,98 @@ function formatDurationHuman(sec: number): string {
   return rem > 0 ? `${mins}m ${rem}s` : `${mins}m`;
 }
 
+interface CaptionCue {
+  startSec: number;
+  endSec: number;
+  text: string;
+}
+
+interface YouTubeVideoContext {
+  videoId: string;
+  title?: string;
+  cues: CaptionCue[];
+}
+
+function extractYouTubeVideoId(rawUrl: string): string | null {
+  if (!rawUrl) return null;
+  try {
+    const parsed = new URL(rawUrl);
+    const host = parsed.hostname.toLowerCase();
+    if (host === 'youtu.be') {
+      const id = parsed.pathname.replace(/^\//, '').split('/')[0];
+      return id && id.length >= 6 ? id : null;
+    }
+    if (host.includes('youtube.com') || host.includes('youtube-nocookie.com')) {
+      const v = parsed.searchParams.get('v');
+      if (v && v.length >= 6) return v;
+      const parts = parsed.pathname.split('/').filter(Boolean);
+      if ((parts[0] === 'embed' || parts[0] === 'shorts' || parts[0] === 'live') && parts[1]) {
+        return parts[1];
+      }
+    }
+  } catch {
+    // Not a URL
+  }
+  return null;
+}
+
+function decodeHtmlEntities(str: string): string {
+  return str
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&#(\d+);/g, (_m, code) => String.fromCharCode(parseInt(code, 10)))
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function parseYouTubeTimedTextXml(xml: string): CaptionCue[] {
+  const cues: CaptionCue[] = [];
+
+  // Format 3: <p t="1234" d="5678">text</p>
+  const pRegex = /<p\s+[^>]*t="(\d+)"(?:[^>]*d="(\d+)")?[^>]*>([\s\S]*?)<\/p>/g;
+  let match: RegExpExecArray | null;
+  while ((match = pRegex.exec(xml)) !== null) {
+    const startSec = parseInt(match[1], 10) / 1000;
+    const durSec = match[2] ? parseInt(match[2], 10) / 1000 : 3.0;
+    const text = decodeHtmlEntities(match[3]);
+    if (text) {
+      cues.push({ startSec, endSec: startSec + durSec, text });
+    }
+  }
+
+  if (cues.length > 0) return cues;
+
+  // Legacy format: <text start="1.23" dur="4.56">text</text>
+  const tRegex = /<text\s+[^>]*start="([\d.]+)"(?:[^>]*dur="([\d.]+)")?[^>]*>([\s\S]*?)<\/text>/g;
+  while ((match = tRegex.exec(xml)) !== null) {
+    const startSec = parseFloat(match[1]);
+    const durSec = match[2] ? parseFloat(match[2]) : 3.0;
+    const text = decodeHtmlEntities(match[3]);
+    if (text) {
+      cues.push({ startSec, endSec: startSec + durSec, text });
+    }
+  }
+
+  return cues;
+}
+
+function sliceTranscriptExcerpt(cues: CaptionCue[], startSec: number, endSec: number, maxChars = 360): string | undefined {
+  if (cues.length === 0) return undefined;
+  const winStart = Math.max(0, startSec - 5);
+  const winEnd = Math.max(endSec + 5, startSec + 15);
+  const matching = cues
+    .filter((c) => c.endSec >= winStart && c.startSec <= winEnd)
+    .map((c) => c.text);
+
+  if (matching.length === 0) return undefined;
+  const joined = matching.join(' ').replace(/\s+/g, ' ').trim();
+  return joined.length > maxChars ? `${joined.slice(0, maxChars).trim()}...` : joined;
+}
+
 /**
  * Loads key=value pairs from .env.local without external dependencies.
  */
@@ -70,6 +162,75 @@ function loadLocalEnv(): Record<string, string> {
  *   Tier 3: Deterministic Offline Analyzer (zero-dependency guaranteed fallback)
  */
 export class SessionReviewAgent {
+  private ytContextCache: Map<string, YouTubeVideoContext> = new Map();
+
+  private async getYouTubeContext(rawUrl: string): Promise<YouTubeVideoContext | null> {
+    const videoId = extractYouTubeVideoId(rawUrl);
+    if (!videoId) return null;
+
+    const cached = this.ytContextCache.get(videoId);
+    if (cached) return cached;
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+
+    try {
+      const watchRes = await fetch(`https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`, {
+        signal: controller.signal,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+          'Accept-Language': 'en-US,en;q=0.9'
+        }
+      });
+      const html = await watchRes.text();
+      const rawTitle = html.match(/<title>(.*?)<\/title>/)?.[1];
+      const title = rawTitle ? decodeHtmlEntities(rawTitle.replace(/\s*-\s*YouTube\s*$/i, '')) : undefined;
+      const apiKey = html.match(/"INNERTUBE_API_KEY":"([^"]+)"/)?.[1];
+
+      let cues: CaptionCue[] = [];
+      if (apiKey) {
+        const playerRes = await fetch(`https://www.youtube.com/youtubei/v1/player?key=${encodeURIComponent(apiKey)}`, {
+          method: 'POST',
+          signal: controller.signal,
+          headers: {
+            'Content-Type': 'application/json',
+            'User-Agent': 'com.google.android.youtube/20.10.38 (Linux; U; Android 14)'
+          },
+          body: JSON.stringify({
+            videoId,
+            context: {
+              client: { clientName: 'ANDROID', clientVersion: '20.10.38', hl: 'en', gl: 'US' }
+            }
+          })
+        });
+        if (playerRes.ok) {
+          const playerJson = (await playerRes.json()) as any;
+          const tracks: any[] = playerJson?.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
+          const preferred =
+            tracks.find((t) => t.languageCode === 'en' && !t.kind) ||
+            tracks.find((t) => String(t.languageCode || '').startsWith('en')) ||
+            tracks[0];
+
+          if (preferred?.baseUrl) {
+            const capRes = await fetch(preferred.baseUrl, { signal: controller.signal });
+            if (capRes.ok) {
+              const xml = await capRes.text();
+              cues = parseYouTubeTimedTextXml(xml);
+            }
+          }
+        }
+      }
+
+      const ctx: YouTubeVideoContext = { videoId, title, cues };
+      this.ytContextCache.set(videoId, ctx);
+      return ctx;
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   private getConfig(): { geminiKey: string; ollamaUrl: string; defaultOllamaModel: string } {
     const fileEnv = loadLocalEnv();
     const geminiKey = process.env.GEMINI_API_KEY || fileEnv.GEMINI_API_KEY || '';
@@ -123,7 +284,22 @@ export class SessionReviewAgent {
     const language: AgentLanguage = req.language || 'english';
     const selectedOllamaModel = req.ollamaModel || defaultOllamaModel;
 
-    const systemPrompt = this.buildSystemPrompt(req.session, language);
+    // Enrich YouTube lectures with video title & timestamped caption excerpts for missed segments
+    const ytContext =
+      req.session.source.type === 'url'
+        ? await this.getYouTubeContext(req.session.source.pathOrUrl)
+        : null;
+
+    const { contextJson, matchedExcerptsCount } = this.buildSessionContextJson(req.session, ytContext);
+    const transcriptContext = ytContext
+      ? {
+          videoTitle: ytContext.title,
+          captionsAvailable: ytContext.cues.length > 0,
+          matchedExcerptsCount
+        }
+      : undefined;
+
+    const systemPrompt = this.buildSystemPrompt(contextJson, language, Boolean(ytContext && ytContext.cues.length > 0));
     const userPrompt = req.question?.trim() || this.buildDefaultAnalysisPrompt(language);
     const history = req.history || [];
 
@@ -134,14 +310,16 @@ export class SessionReviewAgent {
         return {
           answer,
           providerUsed: 'ollama',
-          modelUsed: selectedOllamaModel
+          modelUsed: selectedOllamaModel,
+          transcriptContext
         };
       } catch (err: any) {
         return {
-          answer: this.buildOfflineFallback(req.session, language, req.question),
+          answer: this.buildOfflineFallback(req.session, language, req.question, ytContext),
           providerUsed: 'offline',
           modelUsed: 'Local Deterministic Analyzer',
-          failoverReason: `Ollama unavailable (${err?.message || 'not running'}). Start Ollama with "ollama serve" to use local open-source models.`
+          failoverReason: `Ollama unavailable (${err?.message || 'not running'}). Start Ollama with "ollama serve" to use local open-source models.`,
+          transcriptContext
         };
       }
     }
@@ -155,16 +333,18 @@ export class SessionReviewAgent {
         return {
           answer,
           providerUsed: 'gemini',
-          modelUsed: 'gemini-2.5-flash'
+          modelUsed: 'gemini-2.5-flash',
+          transcriptContext
         };
       } catch (err: any) {
         geminiFailReason = err?.message || 'Gemini API request failed';
         if (engine === 'gemini') {
           return {
-            answer: this.buildOfflineFallback(req.session, language, req.question),
+            answer: this.buildOfflineFallback(req.session, language, req.question, ytContext),
             providerUsed: 'offline',
             modelUsed: 'Local Deterministic Analyzer',
-            failoverReason: `Gemini error: ${geminiFailReason}`
+            failoverReason: `Gemini error: ${geminiFailReason}`,
+            transcriptContext
           };
         }
       }
@@ -184,7 +364,8 @@ export class SessionReviewAgent {
           modelUsed: targetModel,
           failoverReason: geminiFailReason
             ? `Auto-switched to local open-source ${targetModel} (${geminiFailReason})`
-            : undefined
+            : undefined,
+          transcriptContext
         };
       }
     } catch (ollamaErr: any) {
@@ -193,10 +374,11 @@ export class SessionReviewAgent {
 
     // Guaranteed Tier 3 Offline Fallback
     return {
-      answer: this.buildOfflineFallback(req.session, language, req.question),
+      answer: this.buildOfflineFallback(req.session, language, req.question, ytContext),
       providerUsed: 'offline',
       modelUsed: 'Local Deterministic Analyzer',
-      failoverReason: geminiFailReason
+      failoverReason: geminiFailReason,
+      transcriptContext
     };
   }
 
@@ -308,20 +490,50 @@ export class SessionReviewAgent {
     }
   }
 
-  private buildSessionContextJson(session: SessionDocument): string {
+  private buildSessionContextJson(
+    session: SessionDocument,
+    ytContext: YouTubeVideoContext | null
+  ): { contextJson: string; matchedExcerptsCount: number } {
     const metrics = session.metrics;
     const pauses = (session.events || []).filter((e) => e.type === 'pause');
     const markers = (session.events || []).filter((e) => e.type === 'marker');
     const bookmarks = (session.events || []).filter((e) => e.type === 'bookmark');
+    const cues = ytContext?.cues || [];
+    let matchedExcerptsCount = 0;
 
     const totalWallSec =
       session.startedAt && session.endedAt
         ? Math.max(0, Math.round((new Date(session.endedAt).getTime() - new Date(session.startedAt).getTime()) / 1000))
         : Math.round((metrics?.watchingDurationSec || 0) + (metrics?.absentDurationSec || 0) + (metrics?.degradedDurationSec || 0));
 
+    const detectedEvents = (session.events || []).map((ev) => {
+      const excerpt = sliceTranscriptExcerpt(cues, ev.start, ev.end);
+      if (excerpt) matchedExcerptsCount++;
+      return {
+        type: ev.type,
+        videoRange: `${formatTimestamp(ev.start)} - ${formatTimestamp(ev.end)}`,
+        evidenceRules: ev.evidence,
+        reason: ev.note || ev.type,
+        ...(excerpt ? { spokenTranscriptDuringInterval: excerpt } : {})
+      };
+    });
+
+    const compiledRewindQueue = (session.queue || []).map((q, idx) => {
+      const excerpt = sliceTranscriptExcerpt(cues, q.start, q.end);
+      if (excerpt) matchedExcerptsCount++;
+      return {
+        step: idx + 1,
+        chapter: q.chapterTitle || 'General',
+        rewatchRange: `${formatTimestamp(q.start)} - ${formatTimestamp(q.end)}`,
+        duration: formatDurationHuman(q.duration),
+        ...(excerpt ? { spokenTranscriptDuringInterval: excerpt } : {})
+      };
+    });
+
     const summaryPayload = {
-      lectureTitle: session.source.name,
+      lectureTitle: ytContext?.title || session.source.name,
       sourceType: session.source.type,
+      captionsAvailable: cues.length > 0,
       videoDuration: formatTimestamp(session.source.duration || 0),
       videoDurationSec: Math.round(session.source.duration || 0),
       sessionWallTime: formatDurationHuman(totalWallSec),
@@ -341,18 +553,8 @@ export class SessionReviewAgent {
         title: c.title,
         range: `${formatTimestamp(c.start)} - ${formatTimestamp(c.end)}`
       })),
-      detectedEvents: (session.events || []).map((ev) => ({
-        type: ev.type,
-        videoRange: `${formatTimestamp(ev.start)} - ${formatTimestamp(ev.end)}`,
-        evidenceRules: ev.evidence,
-        reason: ev.note || ev.type
-      })),
-      compiledRewindQueue: (session.queue || []).map((q, idx) => ({
-        step: idx + 1,
-        chapter: q.chapterTitle || 'General',
-        rewatchRange: `${formatTimestamp(q.start)} - ${formatTimestamp(q.end)}`,
-        duration: formatDurationHuman(q.duration)
-      })),
+      detectedEvents,
+      compiledRewindQueue,
       stateTransitions: (metrics?.stateTimeline || []).slice(-25).map((seg) => ({
         state: seg.state,
         atVideoTime: formatTimestamp(seg.videoTimeSec),
@@ -360,40 +562,53 @@ export class SessionReviewAgent {
       }))
     };
 
-    return JSON.stringify(summaryPayload, null, 2);
+    return {
+      contextJson: JSON.stringify(summaryPayload, null, 2),
+      matchedExcerptsCount
+    };
   }
 
-  private buildSystemPrompt(session: SessionDocument, language: AgentLanguage): string {
+  private buildSystemPrompt(contextJson: string, language: AgentLanguage, hasCaptions: boolean): string {
     const langInstruction =
       language === 'hinglish'
         ? 'Respond in clear, friendly Hinglish (natural mix of Hindi in Roman script and English technical terms, concise bullet points).'
         : 'Respond in clear, concise English with structured bullet points.';
 
+    const captionInstruction = hasCaptions
+      ? '- When `spokenTranscriptDuringInterval` is present for an event or queue interval, briefly summarize WHAT TOPIC the instructor was explaining during that exact missed timestamp!'
+      : '- Never invent video topics or timestamps that are not in the JSON.';
+
     return [
       'You are the Lecture Rewind Session Review Agent.',
       'Your job is to inspect the recorded lecture session JSON below and tell the viewer clearly:',
       '1) How long they were actively watching vs absent/paused, plus total blinks and camera stability.',
-      '2) Exactly WHERE in the lecture video intervals were missed, paused, briefly closed, or bookmarked (using MM:SS timestamps and chapter names if present).',
+      '2) Exactly WHERE in the lecture video intervals were missed, paused, briefly closed, or bookmarked (using MM:SS timestamps, chapter names, and spoken transcript context if present).',
       '3) Actionable rewatch order so they can recover missed segments fast.',
       '',
       'STRICT RULES:',
-      '- Base every single timestamp, duration, and event strictly on the Session JSON below. Never invent video topics or timestamps that are not in the JSON.',
+      '- Base every single timestamp, duration, event, and topic strictly on the Session JSON below.',
+      captionInstruction,
       '- Use factual mechanical terms only: "watching", "prolonged eye closure", "brief eye closure", "viewer not present", "head drop", "bookmark", "low camera confidence". Never make medical or diagnostic claims.',
       `- ${langInstruction}`,
       '',
       'SESSION JSON DATA:',
-      this.buildSessionContextJson(session)
+      contextJson
     ].join('\n');
   }
 
   private buildDefaultAnalysisPrompt(language: AgentLanguage): string {
     if (language === 'hinglish') {
-      return 'Is poore lecture session JSON ka clear summary do: kitni der watching raha, kitni der absent/missed raha, total blinks kitne hue, video mein kahan-kahan kya miss ya mark hua (exact timestamps ke saath), aur kahan se rewatch karna chahiye.';
+      return 'Is poore lecture session JSON ka clear summary do: kitni der watching raha, kitni der absent/missed raha, total blinks kitne hue, video mein kahan-kahan kya miss ya mark hua (exact timestamps aur transcript topic ke saath agar available ho), aur kahan se rewatch karna chahiye.';
     }
-    return 'Analyze this complete lecture session JSON: summarize total watching vs absent time, blink count, every timestamp where an absence pause, brief closure marker, or bookmark occurred, and give a clear step-by-step rewatch plan.';
+    return 'Analyze this complete lecture session JSON: summarize total watching vs absent time, blink count, every timestamp where an absence pause, brief closure marker, or bookmark occurred (including what topic was being taught if transcript excerpts are present), and give a clear step-by-step rewatch plan.';
   }
 
-  private buildOfflineFallback(session: SessionDocument, language: AgentLanguage, question?: string): string {
+  private buildOfflineFallback(
+    session: SessionDocument,
+    language: AgentLanguage,
+    question?: string,
+    ytContext?: YouTubeVideoContext | null
+  ): string {
     const m = session.metrics;
     const watching = formatDurationHuman(m?.watchingDurationSec || 0);
     const absent = formatDurationHuman(m?.absentDurationSec || 0);
@@ -401,11 +616,13 @@ export class SessionReviewAgent {
     const blinks = m?.totalBlinks ?? 0;
     const events = session.events || [];
     const queue = session.queue || [];
+    const cues = ytContext?.cues || [];
+    const displayTitle = ytContext?.title || session.source.name;
 
     const lines: string[] = [];
 
     if (language === 'hinglish') {
-      lines.push(`### Session Summary: ${session.source.name}`);
+      lines.push(`### Session Summary: ${displayTitle}`);
       lines.push(`- **Watching Time:** ${watching} | **Absent / Paused:** ${absent} | **Low Signal:** ${degraded}`);
       lines.push(`- **Total Blinks:** ${blinks} | **Furthest Video Position:** ${formatTimestamp(m?.furthestVideoTimeSec || 0)}`);
       lines.push('');
@@ -417,8 +634,9 @@ export class SessionReviewAgent {
         events.forEach((ev, i) => {
           const label =
             ev.type === 'pause' ? 'Auto-Pause (Absent)' : ev.type === 'bookmark' ? 'Bookmark' : 'Brief Closure Marker';
+          const excerpt = sliceTranscriptExcerpt(cues, ev.start, ev.end, 160);
           lines.push(
-            `${i + 1}. **${formatTimestamp(ev.start)} – ${formatTimestamp(ev.end)}** — ${label}${ev.note ? ` (${ev.note})` : ''}`
+            `${i + 1}. **${formatTimestamp(ev.start)} – ${formatTimestamp(ev.end)}** — ${label}${ev.note ? ` (${ev.note})` : ''}${excerpt ? ` — Topic: "${excerpt}"` : ''}`
           );
         });
 
@@ -436,7 +654,7 @@ export class SessionReviewAgent {
         lines.push('', `*(Note: Offline fallback mode active — question "${question}" ke liye upar exact timestamps aur stats diye gaye hain.)*`);
       }
     } else {
-      lines.push(`### Session Summary: ${session.source.name}`);
+      lines.push(`### Session Summary: ${displayTitle}`);
       lines.push(`- **Watching Time:** ${watching} | **Absent / Paused:** ${absent} | **Low Signal:** ${degraded}`);
       lines.push(`- **Total Blinks:** ${blinks} | **Furthest Video Position:** ${formatTimestamp(m?.furthestVideoTimeSec || 0)}`);
       lines.push('');
@@ -446,8 +664,9 @@ export class SessionReviewAgent {
       } else {
         lines.push('### Timestamped Session Events:');
         events.forEach((ev, i) => {
+          const excerpt = sliceTranscriptExcerpt(cues, ev.start, ev.end, 160);
           lines.push(
-            `${i + 1}. **${formatTimestamp(ev.start)} – ${formatTimestamp(ev.end)}** — ${ev.type.toUpperCase()}${ev.note ? ` (${ev.note})` : ''}`
+            `${i + 1}. **${formatTimestamp(ev.start)} – ${formatTimestamp(ev.end)}** — ${ev.type.toUpperCase()}${ev.note ? ` (${ev.note})` : ''}${excerpt ? ` — Spoken context: "${excerpt}"` : ''}`
           );
         });
 

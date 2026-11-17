@@ -297,7 +297,7 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
   const [selectedOllamaModel, setSelectedOllamaModel] = useState<string>('gemma:2b');
   const [agentLanguage, setAgentLanguage] = useState<AgentLanguage>('english');
   const [agentLoading, setAgentLoading] = useState<boolean>(false);
-  const [agentMeta, setAgentMeta] = useState<Pick<AgentResponse, 'providerUsed' | 'modelUsed' | 'failoverReason'> | null>(null);
+  const [agentMeta, setAgentMeta] = useState<Pick<AgentResponse, 'providerUsed' | 'modelUsed' | 'failoverReason' | 'transcriptContext'> | null>(null);
   const [chatMessages, setChatMessages] = useState<AgentChatMessage[]>([]);
   const [chatInput, setChatInput] = useState<string>('');
   const chatEndRef = useRef<HTMLDivElement | null>(null);
@@ -501,7 +501,8 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
         setAgentMeta({
           providerUsed: res.providerUsed,
           modelUsed: res.modelUsed,
-          failoverReason: res.failoverReason
+          failoverReason: res.failoverReason,
+          transcriptContext: res.transcriptContext
         });
         setChatMessages((prev) => [...prev, { role: 'assistant', content: res.answer }]);
       } else {
@@ -960,6 +961,20 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
                           : agentMeta.providerUsed === 'ollama'
                           ? `Local Open-Source: ${agentMeta.modelUsed}`
                           : 'Offline Local Engine'}
+                      </span>
+                    )}
+                    {agentMeta?.transcriptContext?.captionsAvailable && (
+                      <span style={{
+                        fontSize: '11px',
+                        fontFamily: 'monospace',
+                        padding: '2px 8px',
+                        borderRadius: '10px',
+                        fontWeight: 600,
+                        background: 'rgba(139, 92, 246, 0.18)',
+                        border: '1px solid #8b5cf6',
+                        color: '#c4b5fd'
+                      }}>
+                        CC Transcript Synced{agentMeta.transcriptContext.matchedExcerptsCount > 0 ? ` (${agentMeta.transcriptContext.matchedExcerptsCount} excerpts)` : ''}
                       </span>
                     )}
                   </div>

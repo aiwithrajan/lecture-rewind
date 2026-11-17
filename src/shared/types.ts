@@ -179,6 +179,11 @@ export interface AgentResponse {
   providerUsed: 'gemini' | 'ollama' | 'offline';
   modelUsed: string;
   failoverReason?: string;
+  transcriptContext?: {
+    videoTitle?: string;
+    captionsAvailable: boolean;
+    matchedExcerptsCount: number;
+  };
 }
 
 // 15. Consent Record (PRD FR-3 & Section 11)
