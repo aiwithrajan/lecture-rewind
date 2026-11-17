@@ -57,6 +57,14 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
   const [chapters, setChapters] = useState<ChapterInfo[]>(source.chapters || []);
   const [currentChapterTitle, setCurrentChapterTitle] = useState<string>('');
 
+  // Live Camera PIP Preview state
+  const [isCameraPipOpen, setIsCameraPipOpen] = useState(true);
+  const [isPipMinimized, setIsPipMinimized] = useState(false);
+  const [hasWebcamStream, setHasWebcamStream] = useState(false);
+  const pipVideoRef = useRef<HTMLVideoElement | null>(null);
+  const pipCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const webcamStreamRef = useRef<MediaStream | null>(null);
+
   const startTimeRef = useRef<string>(new Date().toISOString());
 
   // Helper to pause video
@@ -194,6 +202,58 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
       const evidence = evaluatorRef.current.evaluateFrame(syncedFrame);
       setCurrentEar(evidence.ear);
 
+      // Draw facial landmark wireframe on the PIP canvas
+      if (pipCanvasRef.current && frame.landmarks && frame.landmarks.length >= 468) {
+        const canvas = pipCanvasRef.current;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          const W = canvas.width;
+          const H = canvas.height;
+          const lm = frame.landmarks;
+          const isClosed = evidence.ear !== null && evidence.ear < calibration.closureThreshold;
+
+          ctx.strokeStyle = isClosed ? '#f43f5e' : '#38bdf8';
+          ctx.lineWidth = 1.5;
+
+          const drawRing = (indices: number[]) => {
+            ctx.beginPath();
+            indices.forEach((idx, i) => {
+              const pt = lm[idx];
+              if (!pt) return;
+              const x = pt.x * W;
+              const y = pt.y * H;
+              if (i === 0) ctx.moveTo(x, y);
+              else ctx.lineTo(x, y);
+            });
+            ctx.closePath();
+            ctx.stroke();
+          };
+
+          // Left eye and Right eye rings
+          drawRing([33, 160, 158, 133, 153, 144]);
+          drawRing([362, 385, 387, 263, 373, 380]);
+
+          // Vertical pitch vector (168 -> 152)
+          if (lm[168] && lm[152]) {
+            ctx.strokeStyle = '#6366f1';
+            ctx.beginPath();
+            ctx.moveTo(lm[168].x * W, lm[168].y * H);
+            ctx.lineTo(lm[152].x * W, lm[152].y * H);
+            ctx.stroke();
+          }
+
+          // Horizontal yaw vector (33 -> 263)
+          if (lm[33] && lm[263]) {
+            ctx.strokeStyle = '#38bdf8';
+            ctx.beginPath();
+            ctx.moveTo(lm[33].x * W, lm[33].y * H);
+            ctx.lineTo(lm[263].x * W, lm[263].y * H);
+            ctx.stroke();
+          }
+        }
+      }
+
       // Run state machine
       sm.processFrame(evidence, syncedFrame);
     });
@@ -201,7 +261,39 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
     return () => {
       provider.stop();
     };
-  }, [provider, pausePlayback, source.pathOrUrl]);
+  }, [provider, pausePlayback, source.pathOrUrl, calibration.closureThreshold]);
+
+  // Acquire local webcam stream for picture-in-picture box
+  useEffect(() => {
+    let active = true;
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      navigator.mediaDevices
+        .getUserMedia({ video: { width: 320, height: 240 } })
+        .then((stream) => {
+          if (!active) {
+            stream.getTracks().forEach((t) => t.stop());
+            return;
+          }
+          webcamStreamRef.current = stream;
+          setHasWebcamStream(true);
+          if (pipVideoRef.current) {
+            pipVideoRef.current.srcObject = stream;
+            pipVideoRef.current.play().catch(() => {});
+          }
+        })
+        .catch(() => {
+          setHasWebcamStream(false);
+        });
+    }
+
+    return () => {
+      active = false;
+      if (webcamStreamRef.current) {
+        webcamStreamRef.current.getTracks().forEach((t) => t.stop());
+        webcamStreamRef.current = null;
+      }
+    };
+  }, []);
 
   // Update guard and notes mode in engine
   useEffect(() => {
@@ -385,6 +477,22 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
             Guard [G]: {guardEnabled ? 'ACTIVE' : 'SUSPENDED'}
           </button>
 
+          {/* Camera PIP Toggle */}
+          <button
+            onClick={() => setIsCameraPipOpen(!isCameraPipOpen)}
+            style={{
+              background: isCameraPipOpen ? 'rgba(56, 189, 248, 0.2)' : '#1e293b',
+              border: `1px solid ${isCameraPipOpen ? '#38bdf8' : '#2e3c54'}`,
+              color: isCameraPipOpen ? '#38bdf8' : '#94a3b8',
+              padding: '4px 10px',
+              borderRadius: '6px',
+              fontSize: '12px',
+              cursor: 'pointer'
+            }}
+          >
+            Camera [{isCameraPipOpen ? 'ON' : 'OFF'}]
+          </button>
+
           {/* Finish & View Queue */}
           <button
             onClick={finishSession}
@@ -543,6 +651,190 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
               </div>
             </div>
           </div>
+        )}
+
+        {/* Live Camera Picture-in-Picture Box */}
+        {isCameraPipOpen && (
+          <div style={{
+            position: 'absolute',
+            bottom: '24px',
+            right: '24px',
+            width: isPipMinimized ? '190px' : '260px',
+            height: isPipMinimized ? '38px' : '200px',
+            background: 'rgba(15, 23, 42, 0.94)',
+            backdropFilter: 'blur(8px)',
+            border: `2px solid ${getStatusColor()}`,
+            borderRadius: '12px',
+            overflow: 'hidden',
+            boxShadow: `0 8px 30px rgba(0, 0, 0, 0.7), 0 0 12px ${getStatusColor()}33`,
+            display: 'flex',
+            flexDirection: 'column',
+            zIndex: 25,
+            transition: 'all 0.2s cubic-bezier(0.16, 1, 0.3, 1)'
+          }}>
+            {/* Header / Strip */}
+            <div style={{
+              height: '36px',
+              background: '#0b0f19',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              padding: '0 10px',
+              borderBottom: isPipMinimized ? 'none' : '1px solid #1e293b'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <div style={{
+                  width: '8px',
+                  height: '8px',
+                  borderRadius: '50%',
+                  background: getStatusColor(),
+                  boxShadow: `0 0 6px ${getStatusColor()}`
+                }} />
+                <span style={{ fontSize: '11px', fontWeight: 600, color: '#f8fafc', letterSpacing: '0.5px' }}>
+                  {hasWebcamStream ? 'LIVE CAMERA' : 'TRACKING MESH'}
+                </span>
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                <button
+                  onClick={() => setIsPipMinimized(!isPipMinimized)}
+                  title={isPipMinimized ? 'Expand Camera Box' : 'Minimize'}
+                  style={{
+                    background: 'transparent',
+                    border: 'none',
+                    color: '#94a3b8',
+                    cursor: 'pointer',
+                    fontSize: '12px',
+                    padding: '2px 6px',
+                    borderRadius: '4px'
+                  }}
+                >
+                  {isPipMinimized ? '▢' : '—'}
+                </button>
+                <button
+                  onClick={() => setIsCameraPipOpen(false)}
+                  title="Hide Camera Box"
+                  style={{
+                    background: 'transparent',
+                    border: 'none',
+                    color: '#94a3b8',
+                    cursor: 'pointer',
+                    fontSize: '12px',
+                    padding: '2px 6px',
+                    borderRadius: '4px'
+                  }}
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+
+            {/* Video & Canvas Area */}
+            {!isPipMinimized && (
+              <div style={{ flex: 1, position: 'relative', background: '#070a12', overflow: 'hidden' }}>
+                {/* Live Webcam Video Feed */}
+                <video
+                  ref={pipVideoRef}
+                  muted
+                  playsInline
+                  style={{
+                    width: '100%',
+                    height: '100%',
+                    objectFit: 'cover',
+                    transform: 'scaleX(-1)', // mirror for natural feel
+                    display: hasWebcamStream ? 'block' : 'none'
+                  }}
+                />
+
+                {/* Tracking Mesh Overlay Canvas */}
+                <canvas
+                  ref={pipCanvasRef}
+                  width={260}
+                  height={136}
+                  style={{
+                    position: 'absolute',
+                    inset: 0,
+                    width: '100%',
+                    height: '100%',
+                    pointerEvents: 'none',
+                    transform: 'scaleX(-1)' // mirror matching video
+                  }}
+                />
+
+                {/* Fallback Graphic if no webcam hardware active */}
+                {!hasWebcamStream && (
+                  <div style={{
+                    position: 'absolute',
+                    inset: 0,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '6px',
+                    color: '#64748b',
+                    fontSize: '11px'
+                  }}>
+                    <span style={{ fontSize: '28px' }}>👁️</span>
+                    <span>Geometric Tracking Wireframe</span>
+                  </div>
+                )}
+
+                {/* Bottom Telemetry HUD Bar */}
+                <div style={{
+                  position: 'absolute',
+                  bottom: 0,
+                  left: 0,
+                  right: 0,
+                  background: 'rgba(11, 15, 25, 0.88)',
+                  backdropFilter: 'blur(4px)',
+                  padding: '4px 8px',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  fontSize: '10px',
+                  fontFamily: 'monospace'
+                }}>
+                  <span style={{
+                    color: currentEar !== null && currentEar < calibration.closureThreshold ? '#f43f5e' : '#38bdf8',
+                    fontWeight: 700
+                  }}>
+                    EAR: {currentEar !== null ? currentEar.toFixed(2) : '--'}
+                  </span>
+                  <span style={{ color: '#94a3b8' }}>
+                    THR: {calibration.closureThreshold.toFixed(2)}
+                  </span>
+                  <span style={{ color: getStatusColor(), fontWeight: 600 }}>
+                    {absenceState.toUpperCase()}
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Restore button if user closed the camera box */}
+        {!isCameraPipOpen && (
+          <button
+            onClick={() => setIsCameraPipOpen(true)}
+            style={{
+              position: 'absolute',
+              bottom: '24px',
+              right: '24px',
+              background: '#151d2f',
+              border: '1px solid #2e3c54',
+              color: '#38bdf8',
+              padding: '6px 12px',
+              borderRadius: '8px',
+              fontSize: '12px',
+              cursor: 'pointer',
+              zIndex: 15,
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px'
+            }}
+          >
+            <span>📹 Show Camera Feed</span>
+          </button>
         )}
       </div>
 
