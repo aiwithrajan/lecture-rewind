@@ -61,6 +61,10 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
   const [isCameraPipOpen, setIsCameraPipOpen] = useState(true);
   const [isPipMinimized, setIsPipMinimized] = useState(false);
   const [hasWebcamStream, setHasWebcamStream] = useState(false);
+  const [liveClosedDuration, setLiveClosedDuration] = useState(0);
+  const [livePitch, setLivePitch] = useState(0);
+  const [liveYaw, setLiveYaw] = useState(0);
+  const earHistoryRef = useRef<number[]>([]);
   const pipVideoRef = useRef<HTMLVideoElement | null>(null);
   const pipCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const webcamStreamRef = useRef<MediaStream | null>(null);
@@ -181,6 +185,9 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
       });
     }
 
+    // Start signal stream (ensures real-time detection runs continuously)
+    provider.start().catch(() => {});
+
     // Subscribe to frames from provider
     provider.onFrame((frame) => {
       // Synchronize frame with video playback time
@@ -201,20 +208,50 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
       // Evaluate detection rules
       const evidence = evaluatorRef.current.evaluateFrame(syncedFrame);
       setCurrentEar(evidence.ear);
+      setLiveClosedDuration(evidence.closedDurationSec);
+      if (evidence.relativePose) {
+        setLivePitch(evidence.relativePose.pitch);
+        setLiveYaw(evidence.relativePose.yaw);
+      }
 
-      // Draw facial landmark wireframe on the PIP canvas
+      // Track rolling EAR history for live waveform graph
+      if (evidence.ear !== null) {
+        earHistoryRef.current.push(evidence.ear);
+        if (earHistoryRef.current.length > 50) {
+          earHistoryRef.current.shift();
+        }
+      }
+
+      // Draw real-time computer vision detection mesh on PIP canvas
       if (pipCanvasRef.current && frame.landmarks && frame.landmarks.length >= 468) {
         const canvas = pipCanvasRef.current;
         const ctx = canvas.getContext('2d');
         if (ctx) {
-          ctx.clearRect(0, 0, canvas.width, canvas.height);
           const W = canvas.width;
           const H = canvas.height;
+          ctx.clearRect(0, 0, W, H);
+
           const lm = frame.landmarks;
           const isClosed = evidence.ear !== null && evidence.ear < calibration.closureThreshold;
 
+          // 1. Face targeting corner brackets
+          const bx = W * 0.18;
+          const by = H * 0.12;
+          const bw = W * 0.64;
+          const bh = H * 0.58;
           ctx.strokeStyle = isClosed ? '#f43f5e' : '#38bdf8';
-          ctx.lineWidth = 1.5;
+          ctx.lineWidth = 1.2;
+          const cLen = 14;
+          ctx.beginPath();
+          ctx.moveTo(bx, by + cLen); ctx.lineTo(bx, by); ctx.lineTo(bx + cLen, by);
+          ctx.moveTo(bx + bw - cLen, by); ctx.lineTo(bx + bw, by); ctx.lineTo(bx + bw, by + cLen);
+          ctx.moveTo(bx, by + bh - cLen); ctx.lineTo(bx, by + bh); ctx.lineTo(bx + cLen, by + bh);
+          ctx.moveTo(bx + bw - cLen, by + bh); ctx.lineTo(bx + bw, by + bh); ctx.lineTo(bx + bw, by + bh - cLen);
+          ctx.stroke();
+
+          // 2. Eye polygon contour loops
+          ctx.strokeStyle = isClosed ? '#f43f5e' : '#38bdf8';
+          ctx.lineWidth = isClosed ? 2.0 : 1.5;
 
           const drawRing = (indices: number[]) => {
             ctx.beginPath();
@@ -230,26 +267,91 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
             ctx.stroke();
           };
 
-          // Left eye and Right eye rings
           drawRing([33, 160, 158, 133, 153, 144]);
           drawRing([362, 385, 387, 263, 373, 380]);
 
-          // Vertical pitch vector (168 -> 152)
+          // Iris center tracking crosshairs
+          const leftCenter = lm[160];
+          if (leftCenter) {
+            ctx.fillStyle = isClosed ? '#f43f5e' : '#10b981';
+            ctx.beginPath();
+            ctx.arc(leftCenter.x * W, leftCenter.y * H, isClosed ? 1.5 : 2.5, 0, Math.PI * 2);
+            ctx.fill();
+          }
+          const rightCenter = lm[385];
+          if (rightCenter) {
+            ctx.fillStyle = isClosed ? '#f43f5e' : '#10b981';
+            ctx.beginPath();
+            ctx.arc(rightCenter.x * W, rightCenter.y * H, isClosed ? 1.5 : 2.5, 0, Math.PI * 2);
+            ctx.fill();
+          }
+
+          // 3. Head pose vertical pitch vector (168 -> 152)
           if (lm[168] && lm[152]) {
             ctx.strokeStyle = '#6366f1';
+            ctx.lineWidth = 1.5;
             ctx.beginPath();
             ctx.moveTo(lm[168].x * W, lm[168].y * H);
             ctx.lineTo(lm[152].x * W, lm[152].y * H);
             ctx.stroke();
           }
 
-          // Horizontal yaw vector (33 -> 263)
+          // 4. Head pose horizontal yaw vector (33 -> 263)
           if (lm[33] && lm[263]) {
             ctx.strokeStyle = '#38bdf8';
+            ctx.lineWidth = 1.0;
             ctx.beginPath();
             ctx.moveTo(lm[33].x * W, lm[33].y * H);
             ctx.lineTo(lm[263].x * W, lm[263].y * H);
             ctx.stroke();
+          }
+
+          // 5. Real-Time Scrolling EAR Waveform Graph (bottom 32px of canvas)
+          const graphH = 32;
+          const graphY = H - graphH;
+          ctx.fillStyle = 'rgba(7, 10, 18, 0.85)';
+          ctx.fillRect(0, graphY, W, graphH);
+          ctx.strokeStyle = '#1e293b';
+          ctx.strokeRect(0, graphY, W, graphH);
+
+          // Threshold dashed line
+          const minEar = 0.05;
+          const maxEar = 0.38;
+          const normY = (v: number) => graphY + graphH - Math.max(3, Math.min(graphH - 4, ((v - minEar) / (maxEar - minEar)) * (graphH - 6)));
+          const thrY = normY(calibration.closureThreshold);
+
+          ctx.save();
+          ctx.setLineDash([3, 3]);
+          ctx.strokeStyle = '#ef4444';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(0, thrY);
+          ctx.lineTo(W, thrY);
+          ctx.stroke();
+          ctx.restore();
+
+          // EAR wave path
+          const history = earHistoryRef.current;
+          if (history.length > 1) {
+            ctx.lineWidth = 1.8;
+            ctx.beginPath();
+            history.forEach((val, i) => {
+              const x = (i / 50) * W;
+              const y = normY(val);
+              if (i === 0) ctx.moveTo(x, y);
+              else ctx.lineTo(x, y);
+            });
+            ctx.strokeStyle = isClosed ? '#f43f5e' : '#38bdf8';
+            ctx.stroke();
+
+            // Leading wave pulse dot
+            const lastVal = history[history.length - 1];
+            const lastX = ((history.length - 1) / 50) * W;
+            const lastY = normY(lastVal);
+            ctx.fillStyle = isClosed ? '#f43f5e' : '#10b981';
+            ctx.beginPath();
+            ctx.arc(lastX, lastY, 3, 0, Math.PI * 2);
+            ctx.fill();
           }
         }
       }
@@ -362,6 +464,14 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
         } else {
           onExit();
         }
+      } else if (key === '1') {
+        (provider as any).triggerBlink?.();
+      } else if (key === '2') {
+        (provider as any).triggerBriefLapse?.(3.5);
+      } else if (key === '3') {
+        (provider as any).triggerProlongedAbsence?.(6.5);
+      } else if (key === '4') {
+        (provider as any).triggerHeadDrop?.(5.0);
       }
     };
 
@@ -653,20 +763,20 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
           </div>
         )}
 
-        {/* Live Camera Picture-in-Picture Box */}
+        {/* Live Camera Picture-in-Picture Box with Real-Time Detection HUD */}
         {isCameraPipOpen && (
           <div style={{
             position: 'absolute',
             bottom: '24px',
             right: '24px',
-            width: isPipMinimized ? '190px' : '260px',
-            height: isPipMinimized ? '38px' : '200px',
-            background: 'rgba(15, 23, 42, 0.94)',
+            width: isPipMinimized ? '200px' : '310px',
+            height: isPipMinimized ? '38px' : '285px',
+            background: 'rgba(15, 23, 42, 0.95)',
             backdropFilter: 'blur(8px)',
             border: `2px solid ${getStatusColor()}`,
             borderRadius: '12px',
             overflow: 'hidden',
-            boxShadow: `0 8px 30px rgba(0, 0, 0, 0.7), 0 0 12px ${getStatusColor()}33`,
+            boxShadow: `0 8px 30px rgba(0, 0, 0, 0.7), 0 0 16px ${getStatusColor()}44`,
             display: 'flex',
             flexDirection: 'column',
             zIndex: 25,
@@ -674,7 +784,7 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
           }}>
             {/* Header / Strip */}
             <div style={{
-              height: '36px',
+              height: '34px',
               background: '#0b0f19',
               display: 'flex',
               alignItems: 'center',
@@ -688,10 +798,10 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
                   height: '8px',
                   borderRadius: '50%',
                   background: getStatusColor(),
-                  boxShadow: `0 0 6px ${getStatusColor()}`
+                  boxShadow: `0 0 8px ${getStatusColor()}`
                 }} />
-                <span style={{ fontSize: '11px', fontWeight: 600, color: '#f8fafc', letterSpacing: '0.5px' }}>
-                  {hasWebcamStream ? 'LIVE CAMERA' : 'TRACKING MESH'}
+                <span style={{ fontSize: '11px', fontWeight: 700, color: '#f8fafc', letterSpacing: '0.5px' }}>
+                  {hasWebcamStream ? 'LIVE WEBCAM HUD' : 'REAL-TIME TRACKING HUD'}
                 </span>
               </div>
 
@@ -729,65 +839,97 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
               </div>
             </div>
 
-            {/* Video & Canvas Area */}
+            {/* Video, Canvas & Real-Time Detection HUD */}
             {!isPipMinimized && (
-              <div style={{ flex: 1, position: 'relative', background: '#070a12', overflow: 'hidden' }}>
-                {/* Live Webcam Video Feed */}
-                <video
-                  ref={pipVideoRef}
-                  muted
-                  playsInline
-                  style={{
-                    width: '100%',
-                    height: '100%',
-                    objectFit: 'cover',
-                    transform: 'scaleX(-1)', // mirror for natural feel
-                    display: hasWebcamStream ? 'block' : 'none'
-                  }}
-                />
-
-                {/* Tracking Mesh Overlay Canvas */}
-                <canvas
-                  ref={pipCanvasRef}
-                  width={260}
-                  height={136}
-                  style={{
-                    position: 'absolute',
-                    inset: 0,
-                    width: '100%',
-                    height: '100%',
-                    pointerEvents: 'none',
-                    transform: 'scaleX(-1)' // mirror matching video
-                  }}
-                />
-
-                {/* Fallback Graphic if no webcam hardware active */}
-                {!hasWebcamStream && (
-                  <div style={{
-                    position: 'absolute',
-                    inset: 0,
-                    display: 'flex',
-                    flexDirection: 'column',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: '6px',
-                    color: '#64748b',
-                    fontSize: '11px'
-                  }}>
-                    <span style={{ fontSize: '28px' }}>👁️</span>
-                    <span>Geometric Tracking Wireframe</span>
-                  </div>
-                )}
-
-                {/* Bottom Telemetry HUD Bar */}
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', background: '#070a12', overflow: 'hidden' }}>
+                {/* Real-time Status Alert Banner */}
                 <div style={{
-                  position: 'absolute',
-                  bottom: 0,
-                  left: 0,
-                  right: 0,
-                  background: 'rgba(11, 15, 25, 0.88)',
-                  backdropFilter: 'blur(4px)',
+                  background: liveClosedDuration > 0
+                    ? (liveClosedDuration >= (calibration.userSensitivity || 6.0) ? 'rgba(239, 68, 68, 0.35)' : 'rgba(245, 158, 11, 0.25)')
+                    : 'rgba(30, 41, 59, 0.6)',
+                  borderBottom: '1px solid #1e293b',
                   padding: '4px 8px',
+                  fontSize: '10px',
+                  fontFamily: 'monospace',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  color: liveClosedDuration > 0 ? '#fca5a5' : '#38bdf8'
+                }}>
+                  {liveClosedDuration > 0 ? (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', width: '100%' }}>
+                      <span style={{ fontWeight: 700, color: '#f43f5e' }}>
+                        CLOSURE: {liveClosedDuration.toFixed(1)}s / {(calibration.userSensitivity || 6.0).toFixed(1)}s
+                      </span>
+                      <div style={{ flex: 1, height: '4px', background: '#334155', borderRadius: '2px', overflow: 'hidden' }}>
+                        <div style={{
+                          width: `${Math.min(100, (liveClosedDuration / (calibration.userSensitivity || 6.0)) * 100)}%`,
+                          height: '100%',
+                          background: '#f43f5e'
+                        }} />
+                      </div>
+                    </div>
+                  ) : (
+                    <span>TRACKING: ACTIVE | PITCH: {livePitch >= 0 ? '+' : ''}{livePitch.toFixed(0)}° | YAW: {liveYaw >= 0 ? '+' : ''}{liveYaw.toFixed(0)}°</span>
+                  )}
+                </div>
+
+                {/* Video & Tracking Canvas Area */}
+                <div style={{ flex: 1, position: 'relative', overflow: 'hidden', minHeight: '140px' }}>
+                  {/* Live Webcam Video Feed */}
+                  <video
+                    ref={pipVideoRef}
+                    muted
+                    playsInline
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      objectFit: 'cover',
+                      transform: 'scaleX(-1)',
+                      display: hasWebcamStream ? 'block' : 'none'
+                    }}
+                  />
+
+                  {/* Tracking Mesh & Waveform Canvas */}
+                  <canvas
+                    ref={pipCanvasRef}
+                    width={310}
+                    height={150}
+                    style={{
+                      position: 'absolute',
+                      inset: 0,
+                      width: '100%',
+                      height: '100%',
+                      pointerEvents: 'none',
+                      transform: 'scaleX(-1)'
+                    }}
+                  />
+
+                  {/* Fallback Graphic if webcam not connected */}
+                  {!hasWebcamStream && (
+                    <div style={{
+                      position: 'absolute',
+                      inset: 0,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '4px',
+                      color: '#64748b',
+                      fontSize: '11px',
+                      pointerEvents: 'none'
+                    }}>
+                      <span style={{ fontSize: '24px' }}>👁️</span>
+                      <span>Computer Vision Mesh</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Telemetry Numbers Bar */}
+                <div style={{
+                  background: 'rgba(11, 15, 25, 0.95)',
+                  borderTop: '1px solid #1e293b',
+                  padding: '3px 8px',
                   display: 'flex',
                   justifyContent: 'space-between',
                   alignItems: 'center',
@@ -803,9 +945,84 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
                   <span style={{ color: '#94a3b8' }}>
                     THR: {calibration.closureThreshold.toFixed(2)}
                   </span>
-                  <span style={{ color: getStatusColor(), fontWeight: 600 }}>
+                  <span style={{ color: getStatusColor(), fontWeight: 700 }}>
                     {absenceState.toUpperCase()}
                   </span>
+                </div>
+
+                {/* Quick Simulation Trigger Buttons (1-Click Real-Time Testing) */}
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(4, 1fr)',
+                  gap: '4px',
+                  padding: '4px 6px',
+                  background: '#0b0f19',
+                  borderTop: '1px solid #1e293b'
+                }}>
+                  <button
+                    onClick={() => (provider as any).triggerBlink?.()}
+                    title="Simulate quick eye blink (Key 1)"
+                    style={{
+                      background: '#1e293b',
+                      border: '1px solid #334155',
+                      color: '#cbd5e1',
+                      padding: '3px 2px',
+                      borderRadius: '4px',
+                      fontSize: '10px',
+                      cursor: 'pointer',
+                      fontWeight: 500
+                    }}
+                  >
+                    Blink [1]
+                  </button>
+                  <button
+                    onClick={() => (provider as any).triggerBriefLapse?.(3.5)}
+                    title="Simulate 3.5s brief eye closure (Key 2 -> Marker)"
+                    style={{
+                      background: '#1e293b',
+                      border: '1px solid #f59e0b',
+                      color: '#f59e0b',
+                      padding: '3px 2px',
+                      borderRadius: '4px',
+                      fontSize: '10px',
+                      cursor: 'pointer',
+                      fontWeight: 500
+                    }}
+                  >
+                    3s Lapse [2]
+                  </button>
+                  <button
+                    onClick={() => (provider as any).triggerProlongedAbsence?.(6.5)}
+                    title="Simulate 6.5s prolonged closure (Key 3 -> Pause + Overlay)"
+                    style={{
+                      background: '#1e293b',
+                      border: '1px solid #f43f5e',
+                      color: '#f43f5e',
+                      padding: '3px 2px',
+                      borderRadius: '4px',
+                      fontSize: '10px',
+                      cursor: 'pointer',
+                      fontWeight: 600
+                    }}
+                  >
+                    6s Pause [3]
+                  </button>
+                  <button
+                    onClick={() => (provider as any).triggerHeadDrop?.(5.0)}
+                    title="Simulate head drop pitch below -20° (Key 4)"
+                    style={{
+                      background: '#1e293b',
+                      border: '1px solid #6366f1',
+                      color: '#818cf8',
+                      padding: '3px 2px',
+                      borderRadius: '4px',
+                      fontSize: '10px',
+                      cursor: 'pointer',
+                      fontWeight: 500
+                    }}
+                  >
+                    Head Drop [4]
+                  </button>
                 </div>
               </div>
             )}
