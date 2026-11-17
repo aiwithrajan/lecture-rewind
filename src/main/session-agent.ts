@@ -74,7 +74,7 @@ export class SessionReviewAgent {
     const fileEnv = loadLocalEnv();
     const geminiKey = process.env.GEMINI_API_KEY || fileEnv.GEMINI_API_KEY || '';
     const ollamaUrl = (process.env.OLLAMA_URL || fileEnv.OLLAMA_URL || 'http://127.0.0.1:11434').replace(/\/$/, '');
-    const defaultOllamaModel = process.env.OLLAMA_MODEL || fileEnv.OLLAMA_MODEL || 'gemma:2b';
+    const defaultOllamaModel = process.env.OLLAMA_MODEL || fileEnv.OLLAMA_MODEL || 'lecture-rewind-gemma:latest';
     return { geminiKey, ollamaUrl, defaultOllamaModel };
   }
 
@@ -93,15 +93,21 @@ export class SessionReviewAgent {
         const data = (await res.json()) as { models?: Array<{ name: string }> };
         ollamaAvailable = true;
         ollamaModels = (data.models || []).map((m) => m.name);
+        // Prioritize custom lecture-rewind-* fine-tuned models at the top of the dropdown
+        ollamaModels.sort((a, b) => {
+          const aCustom = a.startsWith('lecture-rewind') ? 0 : 1;
+          const bCustom = b.startsWith('lecture-rewind') ? 0 : 1;
+          return aCustom - bCustom;
+        });
       }
     } catch {
       ollamaAvailable = false;
     }
 
     const pickedDefault =
-      ollamaModels.includes(defaultOllamaModel)
-        ? defaultOllamaModel
-        : ollamaModels[0] || defaultOllamaModel;
+      ollamaModels.find((m) => m === defaultOllamaModel || m.startsWith('lecture-rewind')) ||
+      ollamaModels[0] ||
+      defaultOllamaModel;
 
     return {
       geminiConfigured: Boolean(geminiKey),
