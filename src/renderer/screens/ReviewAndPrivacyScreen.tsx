@@ -18,6 +18,186 @@ interface ReviewAndPrivacyScreenProps {
   initialTab?: 'review' | 'privacy';
 }
 
+/**
+ * Lightweight XSS-safe inline markdown formatter (**bold**, *italic*, `code`, MM:SS timestamp badges).
+ */
+function renderInlineMarkdown(text: string): React.ReactNode[] {
+  const tokenRegex = /(\*\*[^*]+\*\*|`[^`]+`|\*[^*\n]+\*|\b\d{1,2}:\d{2}(?::\d{2})?\b)/g;
+  const nodes: React.ReactNode[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  let key = 0;
+
+  while ((match = tokenRegex.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      nodes.push(text.slice(lastIndex, match.index));
+    }
+
+    const token = match[0];
+    if (token.startsWith('**') && token.endsWith('**')) {
+      nodes.push(
+        <strong key={key++} style={{ color: '#f8fafc', fontWeight: 700 }}>
+          {token.slice(2, -2)}
+        </strong>
+      );
+    } else if (token.startsWith('`') && token.endsWith('`')) {
+      nodes.push(
+        <code
+          key={key++}
+          style={{
+            background: 'rgba(56, 189, 248, 0.14)',
+            color: '#7dd3fc',
+            padding: '1px 6px',
+            borderRadius: '4px',
+            fontFamily: 'var(--font-mono)',
+            fontSize: '12px'
+          }}
+        >
+          {token.slice(1, -1)}
+        </code>
+      );
+    } else if (token.startsWith('*') && token.endsWith('*')) {
+      nodes.push(
+        <em key={key++} style={{ color: '#cbd5e1' }}>
+          {token.slice(1, -1)}
+        </em>
+      );
+    } else {
+      // Timestamp chip (e.g. 0:35 or 12:04)
+      nodes.push(
+        <span
+          key={key++}
+          style={{
+            background: 'rgba(56, 189, 248, 0.14)',
+            border: '1px solid rgba(56, 189, 248, 0.35)',
+            color: '#38bdf8',
+            padding: '0px 5px',
+            borderRadius: '4px',
+            fontFamily: 'var(--font-mono)',
+            fontSize: '12px',
+            fontWeight: 600
+          }}
+        >
+          {token}
+        </span>
+      );
+    }
+
+    lastIndex = match.index + token.length;
+  }
+
+  if (lastIndex < text.length) {
+    nodes.push(text.slice(lastIndex));
+  }
+
+  return nodes;
+}
+
+/**
+ * Renders structured LLM Markdown responses into crisp headings, bullet lists, numbered lists & paragraphs.
+ */
+function renderFormattedMarkdown(content: string): React.ReactNode {
+  const lines = content.split(/\r?\n/);
+  const elements: React.ReactNode[] = [];
+  let listItems: Array<{ ordered: boolean; num?: string; text: string }> = [];
+  let key = 0;
+
+  const flushList = () => {
+    if (listItems.length === 0) return;
+    const isOrdered = listItems[0].ordered;
+    elements.push(
+      <div
+        key={`list-${key++}`}
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '6px',
+          margin: '4px 0 8px 0'
+        }}
+      >
+        {listItems.map((item, idx) => (
+          <div key={idx} style={{ display: 'flex', alignItems: 'flex-start', gap: '8px' }}>
+            <span
+              style={{
+                color: '#38bdf8',
+                fontWeight: 700,
+                fontSize: isOrdered ? '12px' : '14px',
+                lineHeight: '20px',
+                minWidth: isOrdered ? '18px' : '10px',
+                fontFamily: isOrdered ? 'var(--font-mono)' : 'inherit'
+              }}
+            >
+              {isOrdered ? `${item.num}.` : '•'}
+            </span>
+            <span style={{ flex: 1, color: '#cbd5e1' }}>{renderInlineMarkdown(item.text)}</span>
+          </div>
+        ))}
+      </div>
+    );
+    listItems = [];
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+
+    if (!line) {
+      flushList();
+      continue;
+    }
+
+    if (/^---+$/.test(line)) {
+      flushList();
+      elements.push(<hr key={`hr-${key++}`} style={{ border: 'none', borderTop: '1px solid #2e3c54', margin: '8px 0' }} />);
+      continue;
+    }
+
+    const headingMatch = line.match(/^(#{1,3})\s+(.+)$/);
+    if (headingMatch) {
+      flushList();
+      const level = headingMatch[1].length;
+      elements.push(
+        <div
+          key={`h-${key++}`}
+          style={{
+            fontSize: level === 1 ? '16px' : level === 2 ? '14px' : '13px',
+            fontWeight: 700,
+            color: level === 3 ? '#38bdf8' : '#f8fafc',
+            marginTop: elements.length > 0 ? '10px' : '2px',
+            marginBottom: '4px'
+          }}
+        >
+          {renderInlineMarkdown(headingMatch[2])}
+        </div>
+      );
+      continue;
+    }
+
+    const bulletMatch = line.match(/^[-*•]\s+(.+)$/);
+    if (bulletMatch) {
+      if (listItems.length > 0 && listItems[0].ordered) flushList();
+      listItems.push({ ordered: false, text: bulletMatch[1] });
+      continue;
+    }
+
+    const numMatch = line.match(/^(\d+)\.\s+(.+)$/);
+    if (numMatch) {
+      if (listItems.length > 0 && !listItems[0].ordered) flushList();
+      listItems.push({ ordered: true, num: numMatch[1], text: numMatch[2] });
+      continue;
+    }
+
+    flushList();
+    elements.push(
+      <p key={`p-${key++}`} style={{ margin: '2px 0 6px 0', color: '#e2e8f0' }}>
+        {renderInlineMarkdown(line)}
+      </p>
+    );
+  }
+
+  flushList();
+  return <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>{elements}</div>;
+}
+
 export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
   session,
   onBackToHome,
@@ -583,7 +763,6 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
                       fontSize: '13px',
                       lineHeight: 1.6,
                       color: '#e2e8f0',
-                      whiteSpace: 'pre-wrap',
                       userSelect: 'text',
                       WebkitUserSelect: 'text'
                     }}
@@ -594,11 +773,11 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
                       textTransform: 'uppercase',
                       letterSpacing: '0.6px',
                       color: msg.role === 'user' ? '#bfdbfe' : '#38bdf8',
-                      marginBottom: '4px'
+                      marginBottom: '6px'
                     }}>
                       {msg.role === 'user' ? 'You' : 'Lecture Rewind Agent'}
                     </div>
-                    {msg.content}
+                    {msg.role === 'assistant' ? renderFormattedMarkdown(msg.content) : msg.content}
                   </div>
                 ))}
 
