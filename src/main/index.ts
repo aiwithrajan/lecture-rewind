@@ -1,11 +1,21 @@
 import { app, BrowserWindow, dialog, ipcMain, session } from 'electron';
 import * as path from 'path';
-import { bindSmartSpectraIpc } from '@smartspectra/node-sdk/main';
 import { IPC_CHANNELS } from '@shared/ipc-channels';
 import { ConsentRecord, SessionDocument } from '@shared/types';
 import { StorageManager } from './storage';
 import { NetworkGuard } from './network-guard';
 import { parseChaptersForVideo } from './chapter-parser';
+
+let bindSmartSpectraIpc: any = null;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const sdkMain = require('@smartspectra/node-sdk/main');
+  bindSmartSpectraIpc = sdkMain.bindSmartSpectraIpc;
+} catch {
+  console.warn(
+    `[SmartSpectra] Native FFI library not available for host architecture (${process.platform}-${process.arch}). Operating in Simulated Mode (FR-17, AC-6).`
+  );
+}
 
 let mainWindow: BrowserWindow | null = null;
 const storageManager = new StorageManager();
@@ -26,8 +36,14 @@ function createWindow(): BrowserWindow {
     }
   });
 
-  // Attach SmartSpectra native SDK C-FFI MessagePort bridge (Section 3.1)
-  bindSmartSpectraIpc(win);
+  // Attach SmartSpectra native SDK C-FFI MessagePort bridge if available (Section 3.1)
+  if (typeof bindSmartSpectraIpc === 'function') {
+    try {
+      bindSmartSpectraIpc(win);
+    } catch (err) {
+      console.warn('[SmartSpectra] Failed to bind native IPC:', err);
+    }
+  }
 
   // Attach Local Privacy Firewall (Acceptance Criterion 8)
   networkGuard.attach(session.defaultSession);
