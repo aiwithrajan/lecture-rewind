@@ -35,6 +35,7 @@ export class SmartSpectraProvider implements SignalProvider {
   private startTimeMs: number = 0;
   private lastSendMs: number = 0;
   private blinkThreshold: number = 0.22;
+  private consecutiveNoFaceCount: number = 0;
 
   constructor(options: SmartSpectraProviderOptions = {}) {
     this.options = {
@@ -225,6 +226,7 @@ export class SmartSpectraProvider implements SignalProvider {
       const multiLandmarks = results?.multiFaceLandmarks;
 
       if (multiLandmarks && multiLandmarks.length > 0) {
+        this.consecutiveNoFaceCount = 0;
         const rawPts = multiLandmarks[0];
         const landmarks: Landmark3D[] = rawPts.map((pt: any) => ({
           x: pt.x ?? 0.5,
@@ -246,7 +248,12 @@ export class SmartSpectraProvider implements SignalProvider {
           cb(frame);
         }
       } else {
-        // No face detected in frame
+        // Ignore brief 1-2 frame MediaPipe flickers so Watching state stays rock-solid
+        this.consecutiveNoFaceCount++;
+        if (this.consecutiveNoFaceCount < 4) {
+          return;
+        }
+        // Sustained no-face in frame
         const frame: SignalFrame = {
           timestamp: elapsedSec,
           landmarks: undefined,

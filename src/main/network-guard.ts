@@ -42,6 +42,7 @@ export class NetworkGuard {
 
     if (
       url.startsWith('file:') ||
+      url.startsWith('local-video:') ||
       url.startsWith('blob:') ||
       url.startsWith('data:') ||
       url.startsWith('devtools:') ||
@@ -49,6 +50,28 @@ export class NetworkGuard {
       url.startsWith('chrome-extension:')
     ) {
       return { cancel: false, reason: 'Internal Electron protocol' };
+    }
+
+    // 1b. Allow user-requested YouTube lecture embed playback streams
+    try {
+      const parsed = new URL(url);
+      const host = parsed.hostname.toLowerCase();
+      if (
+        host === 'youtube.com' ||
+        host.endsWith('.youtube.com') ||
+        host === 'youtube-nocookie.com' ||
+        host.endsWith('.youtube-nocookie.com') ||
+        host === 'youtu.be' ||
+        host.endsWith('.ytimg.com') ||
+        host.endsWith('.googlevideo.com') ||
+        host.endsWith('.ggpht.com') ||
+        host === 'fonts.gstatic.com' ||
+        host === 'www.gstatic.com'
+      ) {
+        return { cancel: false, reason: 'User-requested lecture video stream' };
+      }
+    } catch {
+      // Malformed URL falls through to block
     }
 
     // 2. Allow Presage licensing/C-FFI endpoints if enabled

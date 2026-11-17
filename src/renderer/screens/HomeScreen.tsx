@@ -74,14 +74,28 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
 
   const handleUrlSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!urlInput.trim()) return;
+    const raw = urlInput.trim();
+    if (!raw) return;
+
+    let displayName = raw.split('/').pop() || 'Web Lecture';
+    try {
+      const parsed = new URL(raw);
+      const ytId = parsed.searchParams.get('v');
+      if (parsed.hostname.includes('youtube.com') && ytId) {
+        displayName = `YouTube Lecture (${ytId})`;
+      } else if (parsed.hostname === 'youtu.be') {
+        displayName = `YouTube Lecture (${parsed.pathname.replace(/^\//, '')})`;
+      }
+    } catch {
+      // Keep fallback display name
+    }
 
     onStartSession(
       {
         type: 'url',
-        pathOrUrl: urlInput.trim(),
+        pathOrUrl: raw,
         duration: 3600,
-        name: urlInput.trim().split('/').pop() || 'Web Lecture'
+        name: displayName
       },
       simulatedMode
     );
@@ -192,7 +206,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           <form onSubmit={handleUrlSubmit} style={{ display: 'flex', gap: '8px' }}>
             <input
               type="text"
-              placeholder="https://example.com/lecture.mp4"
+              placeholder="https://www.youtube.com/watch?v=... or direct .mp4 URL"
               value={urlInput}
               onChange={(e) => setUrlInput(e.target.value)}
               style={{

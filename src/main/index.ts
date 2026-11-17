@@ -1,10 +1,24 @@
-import { app, BrowserWindow, dialog, ipcMain, session } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, net, protocol, session } from 'electron';
 import * as path from 'path';
+import { pathToFileURL } from 'url';
 import { IPC_CHANNELS } from '@shared/ipc-channels';
 import { ConsentRecord, SessionDocument } from '@shared/types';
 import { StorageManager } from './storage';
 import { NetworkGuard } from './network-guard';
 import { parseChaptersForVideo } from './chapter-parser';
+
+// Register custom local-video:// scheme with streaming & range support before app ready
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: 'local-video',
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      stream: true
+    }
+  }
+]);
 
 let bindSmartSpectraIpc: any = null;
 try {
@@ -47,6 +61,24 @@ function createWindow(): BrowserWindow {
 
   // Attach Local Privacy Firewall (Acceptance Criterion 8)
   networkGuard.attach(session.defaultSession);
+
+  // Ensure YouTube embeds receive a valid Referer header in Electron (prevents Error 153)
+  session.defaultSession.webRequest.onBeforeSendHeaders(
+    {
+      urls: [
+        'https://www.youtube.com/*',
+        'https://www.youtube-nocookie.com/*',
+        'https://*.googlevideo.com/*'
+      ]
+    },
+    (details, callback) => {
+      const headers = { ...details.requestHeaders };
+      if (!headers['Referer'] || headers['Referer'].startsWith('http://localhost') || headers['Referer'].startsWith('file://')) {
+        headers['Referer'] = 'https://www.youtube.com/';
+      }
+      callback({ requestHeaders: headers });
+    }
+  );
 
   // Load URL or static file
   if (process.env.ELECTRON_RENDERER_URL) {
@@ -126,6 +158,21 @@ function registerIpcHandlers(): void {
 }
 
 app.whenReady().then(() => {
+  // Stream local lecture video files with full Range/seek support
+  protocol.handle('local-video', (request) => {
+    try {
+      const url = new URL(request.url);
+      const filePath = url.searchParams.get('path');
+      if (!filePath) {
+        return new Response('Missing video path', { status: 400 });
+      }
+      const fileUrl = pathToFileURL(filePath).toString();
+      return net.fetch(fileUrl, { headers: request.headers });
+    } catch {
+      return new Response('Invalid video path', { status: 400 });
+    }
+  });
+
   registerIpcHandlers();
   mainWindow = createWindow();
 

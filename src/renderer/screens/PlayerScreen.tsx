@@ -25,6 +25,53 @@ interface PlayerScreenProps {
   onExit: () => void;
 }
 
+/**
+ * Extracts a 11-char YouTube video ID from standard watch, youtu.be, embed, or shorts URLs.
+ */
+function extractYouTubeVideoId(rawUrl: string): string | null {
+  if (!rawUrl) return null;
+  try {
+    const parsed = new URL(rawUrl);
+    const host = parsed.hostname.toLowerCase();
+    if (host === 'youtu.be') {
+      const id = parsed.pathname.replace(/^\//, '').split('/')[0];
+      return id && id.length >= 6 ? id : null;
+    }
+    if (host.includes('youtube.com') || host.includes('youtube-nocookie.com')) {
+      const vParam = parsed.searchParams.get('v');
+      if (vParam && vParam.length >= 6) return vParam;
+      const parts = parsed.pathname.split('/').filter(Boolean);
+      if ((parts[0] === 'embed' || parts[0] === 'shorts' || parts[0] === 'live') && parts[1]) {
+        return parts[1];
+      }
+    }
+  } catch {
+    // Not a full URL
+  }
+  return null;
+}
+
+/**
+ * Converts local filesystem paths into Electron's custom local-video:// streaming protocol.
+ */
+function resolvePlayableMediaSrc(source: VideoSource): string {
+  const raw = source.pathOrUrl;
+  if (!raw) return '';
+  if (
+    raw.startsWith('http://') ||
+    raw.startsWith('https://') ||
+    raw.startsWith('blob:') ||
+    raw.startsWith('local-video:') ||
+    raw.startsWith('file://')
+  ) {
+    return raw;
+  }
+  if (source.type === 'local' && (raw.startsWith('/') || /^[A-Za-z]:\\/.test(raw))) {
+    return `local-video://media?path=${encodeURIComponent(raw)}`;
+  }
+  return raw;
+}
+
 export const PlayerScreen: React.FC<PlayerScreenProps> = ({
   source,
   calibration,
@@ -32,11 +79,17 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
   onFinishSession,
   onExit
 }) => {
+  const youtubeVideoId = extractYouTubeVideoId(source.pathOrUrl);
+  const mediaSrc = resolvePlayableMediaSrc(source);
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const [isPlaying, setIsPlaying] = useState(false);
+  const ytIframeRef = useRef<HTMLIFrameElement | null>(null);
+  const [isPlaying, setIsPlaying] = useState(Boolean(youtubeVideoId));
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(source.duration || 3600);
   const [playbackRate, setPlaybackRate] = useState(1.0);
+  const [videoError, setVideoError] = useState<string | null>(null);
+  const currentTimeRef = useRef<number>(0);
+  const isPlayingRef = useRef<boolean>(Boolean(youtubeVideoId));
 
   // Absence engine & state machine
   const [absenceState, setAbsenceState] = useState<AbsenceState>('Watching');
@@ -88,30 +141,126 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
 
   const startTimeRef = useRef<string>(new Date().toISOString());
 
-  // Helper to pause video
+  // Send JSON command to embedded YouTube IFrame API
+  const sendYouTubeCommand = useCallback((func: string, args: any[] = []) => {
+    const win = ytIframeRef.current?.contentWindow;
+    if (!win) return;
+    win.postMessage(JSON.stringify({ event: 'command', func, args }), '*');
+  }, []);
+
+  // Listen for YouTube iframe time/duration/state telemetry
+  useEffect(() => {
+    if (!youtubeVideoId) return;
+
+    const handleYtMessage = (event: MessageEvent) => {
+      if (typeof event.data !== 'string') return;
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg.event === 'infoDelivery' && msg.info) {
+          if (typeof msg.info.currentTime === 'number' && Number.isFinite(msg.info.currentTime)) {
+            currentTimeRef.current = msg.info.currentTime;
+            setCurrentTime(msg.info.currentTime);
+          }
+          if (typeof msg.info.duration === 'number' && msg.info.duration > 0) {
+            setDuration(msg.info.duration);
+          }
+          if (typeof msg.info.playerState === 'number') {
+            const playing = msg.info.playerState === 1;
+            isPlayingRef.current = playing;
+            setIsPlaying(playing);
+            if (msg.info.playerState === 0) {
+              // Video ended
+              setIsPlaying(false);
+            }
+          }
+        }
+      } catch {
+        // Ignore non-JSON messages
+      }
+    };
+
+    window.addEventListener('message', handleYtMessage);
+    return () => window.removeEventListener('message', handleYtMessage);
+  }, [youtubeVideoId]);
+
+  // Unified playback helpers (HTML5 <video> + YouTube <iframe>)
+  const playPlayback = useCallback(() => {
+    if (youtubeVideoId) {
+      sendYouTubeCommand('playVideo');
+      isPlayingRef.current = true;
+      setIsPlaying(true);
+    } else if (videoRef.current) {
+      videoRef.current.play().catch(() => {});
+      isPlayingRef.current = true;
+      setIsPlaying(true);
+    }
+  }, [youtubeVideoId, sendYouTubeCommand]);
+
   const pausePlayback = useCallback(() => {
-    if (videoRef.current && !videoRef.current.paused) {
+    if (youtubeVideoId) {
+      sendYouTubeCommand('pauseVideo');
+      isPlayingRef.current = false;
+      setIsPlaying(false);
+    } else if (videoRef.current && !videoRef.current.paused) {
       videoRef.current.pause();
+      isPlayingRef.current = false;
       setIsPlaying(false);
     }
-  }, []);
+  }, [youtubeVideoId, sendYouTubeCommand]);
+
+  const togglePlayback = useCallback(() => {
+    if (youtubeVideoId) {
+      if (isPlayingRef.current) {
+        pausePlayback();
+      } else {
+        playPlayback();
+      }
+    } else if (videoRef.current) {
+      if (videoRef.current.paused) {
+        playPlayback();
+      } else {
+        pausePlayback();
+      }
+    }
+  }, [youtubeVideoId, playPlayback, pausePlayback]);
+
+  const seekToTime = useCallback((targetSec: number) => {
+    const clamped = Math.max(0, Math.min(duration || 3600, targetSec));
+    currentTimeRef.current = clamped;
+    setCurrentTime(clamped);
+    if (youtubeVideoId) {
+      sendYouTubeCommand('seekTo', [clamped, true]);
+    } else if (videoRef.current) {
+      videoRef.current.currentTime = clamped;
+    }
+  }, [youtubeVideoId, duration, sendYouTubeCommand]);
+
+  const setVideoSpeed = useCallback((rate: number) => {
+    setPlaybackRate(rate);
+    if (youtubeVideoId) {
+      sendYouTubeCommand('setPlaybackRate', [rate]);
+    } else if (videoRef.current) {
+      videoRef.current.playbackRate = rate;
+    }
+  }, [youtubeVideoId, sendYouTubeCommand]);
 
   // Helper to resume from 30s earlier
   const resumePlayback30sEarlier = useCallback(() => {
-    if (videoRef.current) {
-      const targetTime = Math.max(0, videoRef.current.currentTime - 30);
-      videoRef.current.currentTime = targetTime;
-      videoRef.current.play().catch(() => {});
-      setIsPlaying(true);
-    }
+    const baseTime = youtubeVideoId
+      ? currentTimeRef.current
+      : (videoRef.current ? videoRef.current.currentTime : currentTimeRef.current);
+    const targetTime = Math.max(0, baseTime - 30);
+    seekToTime(targetTime);
+    playPlayback();
     stateMachineRef.current?.confirmResume();
     setIsBreakActive(false);
-  }, []);
+  }, [youtubeVideoId, seekToTime, playPlayback]);
 
   // Manual bookmark
   const triggerBookmark = useCallback(() => {
-    if (!videoRef.current) return;
-    const ts = videoRef.current.currentTime;
+    const ts = youtubeVideoId
+      ? currentTimeRef.current
+      : (videoRef.current ? videoRef.current.currentTime : currentTimeRef.current);
     const newBookmark: DetectionEvent = {
       id: `bookmark-${ts.toFixed(1)}`,
       type: 'bookmark',
@@ -122,7 +271,7 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
       note: 'Manual bookmark (B key)'
     };
     setEvents((prev) => [...prev, newBookmark]);
-  }, []);
+  }, [youtubeVideoId]);
 
   // Start 2-minute break
   const startBreak = useCallback(() => {
@@ -176,7 +325,9 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
   // Setup state machine & signal subscribers
   useEffect(() => {
     const mapEventToVideoTime = (ev: DetectionEvent): DetectionEvent => {
-      const videoNow = videoRef.current?.currentTime;
+      const videoNow = youtubeVideoId
+        ? currentTimeRef.current
+        : videoRef.current?.currentTime;
       if (typeof videoNow === 'number' && Number.isFinite(videoNow)) {
         const dur = Math.max(0, ev.end - ev.start);
         return {
@@ -226,9 +377,10 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
     provider.onFrame((frame) => {
       // Use monotonic provider timestamp for detection timers so eye-closure & blink tracking
       // work continuously even when the lecture video is paused or unstarted.
-      const videoTs = videoRef.current && videoRef.current.currentTime > 0
-        ? videoRef.current.currentTime
-        : frame.timestamp;
+      const liveVideoTime = youtubeVideoId
+        ? currentTimeRef.current
+        : (videoRef.current ? videoRef.current.currentTime : 0);
+      const videoTs = liveVideoTime > 0 ? liveVideoTime : frame.timestamp;
 
       // Record quality bucket against video timeline
       qualityRibbonRef.current.addFrame({ ...frame, timestamp: videoTs });
@@ -253,44 +405,41 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
       }
 
       // Real-time adaptive blink detector & threshold tracking
-      let activeCloseThr = calibration.closureThreshold;
+      // Uses rolling open-eye median + 0.68/0.76 hysteresis so normal open-eye jitter never false-triggers
+      let activeCloseThr = effectiveThresholdRef.current;
       if (evidence.ear !== null) {
         const ear = evidence.ear;
 
-        // Seed adaptive open-eye baseline from initial frames so skipped calibrations still lock on
-        if (openEarSeedSamplesRef.current.length < 15 && ear > 0.18) {
-          openEarSeedSamplesRef.current.push(ear);
-          const sorted = [...openEarSeedSamplesRef.current].sort((a, b) => a - b);
-          const median = sorted[Math.floor(sorted.length * 0.7)];
-          adaptiveOpenEarRef.current = median;
+        // Collect clean open-eye samples (clamped to human range [0.22, 0.42])
+        if (ear >= 0.22 && ear <= 0.45 && (!isEyeClosedForBlinkRef.current || openEarSeedSamplesRef.current.length < 15)) {
+          openEarSeedSamplesRef.current.push(Math.min(0.42, ear));
+          if (openEarSeedSamplesRef.current.length > 40) {
+            openEarSeedSamplesRef.current.shift();
+          }
 
-          // If user skipped straight through with default calibration (0.28 / 0.18),
-          // align evaluator's closure threshold to the real webcam geometry once seeded
-          if (
-            openEarSeedSamplesRef.current.length === 15 &&
-            !hasAdaptedDefaultCalibRef.current &&
-            calibration.baselineEar === 0.28 &&
-            calibration.closureThreshold === 0.18 &&
-            Math.abs(median - 0.28) > 0.03
-          ) {
-            hasAdaptedDefaultCalibRef.current = true;
-            const adaptedThr = Number((median * 0.70).toFixed(4));
+          const sorted = [...openEarSeedSamplesRef.current].sort((a, b) => a - b);
+          const baseline = sorted[Math.floor(sorted.length * 0.65)];
+          adaptiveOpenEarRef.current = baseline;
+
+          // Keep closure threshold synchronized to 68% of real open-eye baseline
+          const adaptedThr = Number(Math.max(0.14, Math.min(0.26, baseline * 0.68)).toFixed(3));
+          if (Math.abs(adaptedThr - effectiveThresholdRef.current) >= 0.008) {
             effectiveThresholdRef.current = adaptedThr;
+            setEffectiveThreshold(adaptedThr);
+            if (!hasAdaptedDefaultCalibRef.current && openEarSeedSamplesRef.current.length >= 12) {
+              hasAdaptedDefaultCalibRef.current = true;
+            }
             evaluatorRef.current.updateCalibration({
               ...calibration,
-              baselineEar: Number(median.toFixed(4)),
+              baselineEar: Number(baseline.toFixed(4)),
               closureThreshold: adaptedThr
             });
-            setEffectiveThreshold(adaptedThr);
           }
-        } else if (ear > adaptiveOpenEarRef.current * 0.85) {
-          // Gentle EMA tracking of natural open-eye aperture
-          adaptiveOpenEarRef.current = adaptiveOpenEarRef.current * 0.97 + ear * 0.03;
         }
 
-        // Hysteresis thresholds catch fast 1-frame webcam blinks cleanly without noise chatter
-        activeCloseThr = Math.max(effectiveThresholdRef.current, adaptiveOpenEarRef.current * 0.75);
-        const activeOpenThr = Math.max(activeCloseThr + 0.012, adaptiveOpenEarRef.current * 0.81);
+        // Exact unified threshold: HUD THR, red dashed line, Blink Counter, and EvidenceEvaluator all agree
+        activeCloseThr = effectiveThresholdRef.current;
+        const activeOpenThr = Math.max(activeCloseThr + 0.025, adaptiveOpenEarRef.current * 0.76);
 
         if (provider instanceof SmartSpectraProvider) {
           provider.setBlinkThreshold(activeCloseThr);
@@ -307,8 +456,8 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
           const closedMs = nowMs - eyeClosedStartMsRef.current;
           const sinceLastBlinkMs = nowMs - lastBlinkEndMsRef.current;
 
-          // Count distinct blinks (30ms - 2000ms closure, 160ms refractory debounce)
-          if (closedMs >= 30 && closedMs <= 2000 && sinceLastBlinkMs >= 160) {
+          // Count distinct blinks (35ms - 2000ms closure, 180ms refractory debounce)
+          if (closedMs >= 35 && closedMs <= 2000 && sinceLastBlinkMs >= 180) {
             lastBlinkEndMsRef.current = nowMs;
             setBlinkCount((c) => c + 1);
             setBlinkFlash(true);
@@ -599,14 +748,8 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
         e.preventDefault();
         if (absenceState === 'Waiting' || absenceState === 'Returned') {
           resumePlayback30sEarlier();
-        } else if (videoRef.current) {
-          if (videoRef.current.paused) {
-            videoRef.current.play().catch(() => {});
-            setIsPlaying(true);
-          } else {
-            videoRef.current.pause();
-            setIsPlaying(false);
-          }
+        } else {
+          togglePlayback();
         }
       } else if (key === 't') {
         e.preventDefault();
@@ -639,7 +782,7 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [absenceState, isBreakActive, resumePlayback30sEarlier, startBreak, triggerBookmark, onExit]);
+  }, [absenceState, isBreakActive, resumePlayback30sEarlier, togglePlayback, startBreak, triggerBookmark, onExit, provider]);
 
   const formatTime = (sec: number) => {
     const mins = Math.floor(sec / 60);
@@ -799,14 +942,76 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
 
       {/* Main Video View Area */}
       <div style={{ flex: 1, position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#000' }}>
-        <video
-          ref={videoRef}
-          src={source.pathOrUrl}
-          onTimeUpdate={() => videoRef.current && setCurrentTime(videoRef.current.currentTime)}
-          onLoadedMetadata={() => videoRef.current && setDuration(videoRef.current.duration)}
-          onEnded={finishSession}
-          style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }}
-        />
+        {youtubeVideoId ? (
+          <iframe
+            ref={ytIframeRef}
+            src={`https://www.youtube.com/embed/${youtubeVideoId}?enablejsapi=1&autoplay=1&rel=0&modestbranding=1`}
+            title={source.name}
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+            allowFullScreen
+            onLoad={() => {
+              const sendListen = () => {
+                const win = ytIframeRef.current?.contentWindow;
+                if (!win) return;
+                win.postMessage(JSON.stringify({ event: 'listening', id: 1 }), '*');
+                win.postMessage(JSON.stringify({ event: 'command', func: 'addEventListener', args: ['onStateChange'] }), '*');
+              };
+              sendListen();
+              setTimeout(sendListen, 600);
+            }}
+            style={{ width: '100%', height: '100%', border: 'none' }}
+          />
+        ) : (
+          <video
+            ref={videoRef}
+            src={mediaSrc}
+            autoPlay
+            controls={false}
+            onPlay={() => {
+              isPlayingRef.current = true;
+              setIsPlaying(true);
+            }}
+            onPause={() => {
+              isPlayingRef.current = false;
+              setIsPlaying(false);
+            }}
+            onTimeUpdate={() => {
+              if (videoRef.current) {
+                currentTimeRef.current = videoRef.current.currentTime;
+                setCurrentTime(videoRef.current.currentTime);
+              }
+            }}
+            onLoadedMetadata={() => {
+              if (videoRef.current) {
+                setVideoError(null);
+                setDuration(videoRef.current.duration);
+              }
+            }}
+            onError={() => {
+              setVideoError('Could not load this video source. Choose a local MP4/MKV/WebM file or paste a YouTube or direct .mp4 URL.');
+            }}
+            onEnded={finishSession}
+            style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }}
+          />
+        )}
+
+        {videoError && !youtubeVideoId && (
+          <div style={{
+            position: 'absolute',
+            top: '24px',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            background: 'rgba(127, 29, 29, 0.92)',
+            border: '1px solid #ef4444',
+            color: '#fecaca',
+            padding: '10px 16px',
+            borderRadius: '8px',
+            fontSize: '13px',
+            zIndex: 18
+          }}>
+            {videoError}
+          </div>
+        )}
 
         {/* 2-Minute Break Overlay (FR-11) */}
         {isBreakActive && (
@@ -1297,10 +1502,8 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
         <div
           onClick={(e) => {
             const rect = e.currentTarget.getBoundingClientRect();
-            const pct = (e.clientX - rect.left) / rect.width;
-            if (videoRef.current) {
-              videoRef.current.currentTime = pct * duration;
-            }
+            const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+            seekToTime(pct * duration);
           }}
           style={{
             height: '8px',
@@ -1341,17 +1544,7 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
             <button
-              onClick={() => {
-                if (videoRef.current) {
-                  if (videoRef.current.paused) {
-                    videoRef.current.play().catch(() => {});
-                    setIsPlaying(true);
-                  } else {
-                    videoRef.current.pause();
-                    setIsPlaying(false);
-                  }
-                }
-              }}
+              onClick={togglePlayback}
               style={{
                 background: 'transparent',
                 border: '1px solid #2e3c54',
@@ -1391,10 +1584,7 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
             {[0.75, 1.0, 1.25, 1.5, 2.0].map((rate) => (
               <button
                 key={rate}
-                onClick={() => {
-                  setPlaybackRate(rate);
-                  if (videoRef.current) videoRef.current.playbackRate = rate;
-                }}
+                onClick={() => setVideoSpeed(rate)}
                 style={{
                   background: playbackRate === rate ? '#3b82f6' : 'transparent',
                   border: '1px solid #2e3c54',
