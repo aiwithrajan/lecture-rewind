@@ -320,6 +320,25 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
   const headline = QueueBuilder.formatReviewHeadline(durationSec, queueTotalSec);
   const metrics = session.metrics;
 
+  // Presence breakdown percentages (Watching vs Absent vs Low Camera Signal)
+  const watchingSec = metrics?.watchingDurationSec || 0;
+  const absentSec = metrics?.absentDurationSec || 0;
+  const degradedSec = metrics?.degradedDurationSec || 0;
+  const trackedTotalSec = watchingSec + absentSec + degradedSec;
+  const watchingPct = trackedTotalSec > 0
+    ? Math.round((watchingSec / trackedTotalSec) * 100)
+    : Math.max(0, Math.round(((durationSec - queueTotalSec) / Math.max(1, durationSec)) * 100));
+  const absentPct = trackedTotalSec > 0
+    ? Math.round((absentSec / trackedTotalSec) * 100)
+    : Math.min(100 - watchingPct, Math.round((queueTotalSec / Math.max(1, durationSec)) * 100));
+  const degradedPct = Math.max(0, 100 - watchingPct - absentPct);
+  const blinksPerMin = trackedTotalSec >= 5 && metrics
+    ? ((metrics.totalBlinks / trackedTotalSec) * 60).toFixed(1)
+    : '0.0';
+  const ringRadius = 30;
+  const ringCircumference = 2 * Math.PI * ringRadius;
+  const ringDashOffset = ringCircumference * (1 - watchingPct / 100);
+
   const markClipReviewed = (id: string) => {
     setReviewedIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
   };
@@ -759,6 +778,138 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
                 </div>
                 <div style={{ fontSize: '11px', color: '#64748b', marginTop: '2px' }}>
                   {(session.events || []).filter((e) => e.type === 'pause').length} pauses · {(session.events || []).filter((e) => e.type === 'marker').length} markers · {(session.events || []).filter((e) => e.type === 'bookmark').length} bookmarks
+                </div>
+              </div>
+            </div>
+
+            {/* Visual Presence Breakdown Bar & Ring */}
+            <div style={{
+              background: '#151d2f',
+              border: '1px solid #2e3c54',
+              borderRadius: '12px',
+              padding: '20px 24px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '24px'
+            }}>
+              {/* SVG Circular Watching Ring */}
+              <div style={{ position: 'relative', width: '76px', height: '76px', flexShrink: 0 }}>
+                <svg width="76" height="76" viewBox="0 0 76 76" style={{ transform: 'rotate(-90deg)' }}>
+                  <circle
+                    cx="38"
+                    cy="38"
+                    r={ringRadius}
+                    fill="none"
+                    stroke="#1e293b"
+                    strokeWidth="7"
+                  />
+                  <circle
+                    cx="38"
+                    cy="38"
+                    r={ringRadius}
+                    fill="none"
+                    stroke={watchingPct >= 75 ? '#10b981' : watchingPct >= 50 ? '#f59e0b' : '#f43f5e'}
+                    strokeWidth="7"
+                    strokeDasharray={ringCircumference}
+                    strokeDashoffset={ringDashOffset}
+                    strokeLinecap="round"
+                  />
+                </svg>
+                <div style={{
+                  position: 'absolute',
+                  inset: 0,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center'
+                }}>
+                  <span style={{ fontSize: '16px', fontWeight: 800, color: '#f8fafc', fontFamily: 'var(--font-mono)' }}>
+                    {watchingPct}%
+                  </span>
+                  <span style={{ fontSize: '8px', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                    Present
+                  </span>
+                </div>
+              </div>
+
+              {/* 3-Segment Presence Distribution Bar */}
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+                  <span style={{ fontSize: '14px', fontWeight: 600, color: '#f8fafc' }}>
+                    Session Presence Breakdown
+                  </span>
+                  <span style={{
+                    fontSize: '11px',
+                    fontFamily: 'var(--font-mono)',
+                    color: '#38bdf8',
+                    background: 'rgba(56, 189, 248, 0.12)',
+                    border: '1px solid rgba(56, 189, 248, 0.3)',
+                    padding: '2px 8px',
+                    borderRadius: '10px'
+                  }}>
+                    Blink Rate: {blinksPerMin} / min
+                  </span>
+                </div>
+
+                {/* Stacked Proportional Bar */}
+                <div style={{
+                  height: '12px',
+                  width: '100%',
+                  background: '#0b0f19',
+                  borderRadius: '6px',
+                  overflow: 'hidden',
+                  display: 'flex',
+                  border: '1px solid #1e293b'
+                }}>
+                  {watchingPct > 0 && (
+                    <div
+                      title={`Watching: ${formatDurationShort(watchingSec)} (${watchingPct}%)`}
+                      style={{
+                        width: `${watchingPct}%`,
+                        height: '100%',
+                        background: 'linear-gradient(90deg, #059669, #10b981)',
+                        transition: 'width 0.3s ease'
+                      }}
+                    />
+                  )}
+                  {absentPct > 0 && (
+                    <div
+                      title={`Absent / Paused: ${formatDurationShort(absentSec)} (${absentPct}%)`}
+                      style={{
+                        width: `${absentPct}%`,
+                        height: '100%',
+                        background: 'linear-gradient(90deg, #e11d48, #f43f5e)',
+                        transition: 'width 0.3s ease'
+                      }}
+                    />
+                  )}
+                  {degradedPct > 0 && (
+                    <div
+                      title={`Low Camera Signal: ${formatDurationShort(degradedSec)} (${degradedPct}%)`}
+                      style={{
+                        width: `${degradedPct}%`,
+                        height: '100%',
+                        background: '#475569',
+                        transition: 'width 0.3s ease'
+                      }}
+                    />
+                  )}
+                </div>
+
+                {/* Legend Row */}
+                <div style={{ display: 'flex', gap: '18px', flexWrap: 'wrap', fontSize: '12px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#cbd5e1' }}>
+                    <span style={{ width: '9px', height: '9px', borderRadius: '50%', background: '#10b981' }} />
+                    <span>Watching: <strong style={{ color: '#f8fafc' }}>{watchingPct}%</strong> ({formatDurationShort(watchingSec)})</span>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#cbd5e1' }}>
+                    <span style={{ width: '9px', height: '9px', borderRadius: '50%', background: '#f43f5e' }} />
+                    <span>Absent / Paused: <strong style={{ color: '#f8fafc' }}>{absentPct}%</strong> ({formatDurationShort(absentSec)})</span>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#cbd5e1' }}>
+                    <span style={{ width: '9px', height: '9px', borderRadius: '50%', background: '#64748b' }} />
+                    <span>Low Signal: <strong style={{ color: '#f8fafc' }}>{degradedPct}%</strong> ({formatDurationShort(degradedSec)})</span>
+                  </div>
                 </div>
               </div>
             </div>
