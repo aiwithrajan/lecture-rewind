@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { SessionDocument, VideoSource } from '@shared/types';
 import { QueueBuilder } from '../engine/QueueBuilder';
 
@@ -20,6 +20,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   const [recentSessions, setRecentSessions] = useState<SessionDocument[]>([]);
   const [urlInput, setUrlInput] = useState('');
   const [loading, setLoading] = useState(true);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     loadSessions();
@@ -55,21 +56,31 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
             simulatedMode
           );
         }
-      } else {
-        // Web/Test fallback: Use sample video
-        onStartSession(
-          {
-            type: 'local',
-            pathOrUrl: 'sample-lecture.mp4',
-            duration: 3600,
-            name: 'Sample Lecture Video'
-          },
-          simulatedMode
-        );
+        return;
       }
     } catch {
-      // Graceful fallback
+      // Fall through to native browser file input
     }
+
+    // Fallback file picker input (works even in standalone browser / non-IPC context)
+    fileInputRef.current?.click();
+  };
+
+  const handleBrowserFileSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const nativePath = (file as any).path as string | undefined;
+    const blobOrPath = nativePath || URL.createObjectURL(file);
+    onStartSession(
+      {
+        type: 'local',
+        pathOrUrl: blobOrPath,
+        duration: 3600,
+        name: file.name || 'Local Lecture Video'
+      },
+      simulatedMode
+    );
+    e.target.value = '';
   };
 
   const handleUrlSubmit = (e: React.FormEvent) => {
@@ -174,6 +185,14 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
               Select a local MP4, MKV, or WebM video file. Chapter markers (.vtt or .json) are parsed automatically.
             </p>
           </div>
+
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="video/*,.mp4,.mkv,.webm,.mov,.m4v,.avi"
+            onChange={handleBrowserFileSelected}
+            style={{ display: 'none' }}
+          />
 
           <button
             onClick={handlePickLocalFile}

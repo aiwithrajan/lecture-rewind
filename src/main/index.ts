@@ -142,15 +142,19 @@ function registerIpcHandlers(): void {
 
   // File Picker Dialog
   ipcMain.handle(IPC_CHANNELS.DIALOG_OPEN_FILE, async () => {
-    if (!mainWindow) return null;
-    const result = await dialog.showOpenDialog(mainWindow, {
+    const targetWin = BrowserWindow.getFocusedWindow() || mainWindow;
+    const options: Electron.OpenDialogOptions = {
       title: 'Select Lecture Video',
       properties: ['openFile'],
       filters: [
-        { name: 'Video Files', extensions: ['mp4', 'mkv', 'webm', 'mov'] },
+        { name: 'Video Files', extensions: ['mp4', 'mkv', 'webm', 'mov', 'm4v', 'avi'] },
         { name: 'All Files', extensions: ['*'] }
       ]
-    });
+    };
+
+    const result = targetWin
+      ? await dialog.showOpenDialog(targetWin, options)
+      : await dialog.showOpenDialog(options);
 
     if (result.canceled || result.filePaths.length === 0) {
       return null;

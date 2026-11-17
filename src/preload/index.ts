@@ -1,4 +1,3 @@
-import '@smartspectra/node-sdk/preload';
 import { contextBridge, ipcRenderer } from 'electron';
 import { IPC_CHANNELS } from '@shared/ipc-channels';
 import {
@@ -38,6 +37,15 @@ export const rewindApi = {
   }
 };
 
+// Always expose rewindApi FIRST so sandboxed preload never blocks IPC bridge
 contextBridge.exposeInMainWorld('rewindApi', rewindApi);
+
+// Optionally load Presage SmartSpectra preload bridge when native runtime is available
+try {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  require('@smartspectra/node-sdk/preload');
+} catch {
+  // Sandboxed preload or host architecture without native SmartSpectra C-FFI
+}
 
 export type RewindApi = typeof rewindApi;
