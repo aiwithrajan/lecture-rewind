@@ -24,13 +24,16 @@ export const ConsentAndSelfTestScreen: React.FC<ConsentAndSelfTestScreenProps> =
   const [step, setStep] = useState<'consent' | 'testing' | 'results'>('consent');
   const [telemetryOptIn, setTelemetryOptIn] = useState(false);
 
-  // Self-test sequence state
+  // Self-test sequence state (supports both 5s Quick Calibrate and 20s Full Guided Self-Test)
+  const [testMode, setTestMode] = useState<'quick' | 'full'>('quick');
+  const [totalTestDuration, setTotalTestDuration] = useState<number>(5);
   const [testPhase, setTestPhase] = useState<'neutral' | 'closure1' | 'reopen' | 'closure2' | 'pose'>('neutral');
   const testPhaseRef = useRef<'neutral' | 'closure1' | 'reopen' | 'closure2' | 'pose'>('neutral');
-  const [testSecondsRemaining, setTestSecondsRemaining] = useState(20);
+  const [testSecondsRemaining, setTestSecondsRemaining] = useState(5);
   const [promptMessage, setPromptMessage] = useState('Look at the screen with relaxed neutral posture.');
   const [liveEar, setLiveEar] = useState<number | null>(null);
   const [faceDetected, setFaceDetected] = useState(false);
+  const [sampleCounts, setSampleCounts] = useState<{ neutral: number; closure: number }>({ neutral: 0, closure: 0 });
 
   // Captured calibration data
   const neutralFramesRef = useRef<SignalFrame[]>([]);
@@ -58,7 +61,7 @@ export const ConsentAndSelfTestScreen: React.FC<ConsentAndSelfTestScreenProps> =
     };
   }, []);
 
-  const handleGrantConsent = async () => {
+  const handleGrantConsent = async (mode: 'quick' | 'full') => {
     // Record consent via IPC if available
     try {
       if ((window as any).rewindApi?.consent) {
@@ -72,11 +75,16 @@ export const ConsentAndSelfTestScreen: React.FC<ConsentAndSelfTestScreenProps> =
       // Standalone fallback
     }
 
+    const duration = mode === 'quick' ? 5 : 20;
+    setTestMode(mode);
+    setTotalTestDuration(duration);
+    setTestSecondsRemaining(duration);
+    setSampleCounts({ neutral: 0, closure: 0 });
     setStep('testing');
-    startGuidedSelfTest();
+    startGuidedSelfTest(mode);
   };
 
-  const startGuidedSelfTest = async () => {
+  const startGuidedSelfTest = async (mode: 'quick' | 'full') => {
     neutralFramesRef.current = [];
     closureFramesRef.current = [];
 
@@ -117,45 +125,72 @@ export const ConsentAndSelfTestScreen: React.FC<ConsentAndSelfTestScreenProps> =
       const phase = testPhaseRef.current;
       if (phase === 'neutral' || phase === 'reopen') {
         neutralFramesRef.current.push(frame);
+        setSampleCounts({ neutral: neutralFramesRef.current.length, closure: closureFramesRef.current.length });
       } else if (phase === 'closure1' || phase === 'closure2') {
         closureFramesRef.current.push(frame);
+        setSampleCounts({ neutral: neutralFramesRef.current.length, closure: closureFramesRef.current.length });
       }
     });
 
-    // Run 20-second guided timer
+    // Run either 5s Quick Calibrate or 20s Full Guided Self-Test
+    const durationSec = mode === 'quick' ? 5 : 20;
     testPhaseRef.current = 'neutral';
     setTestPhase('neutral');
+    setPromptMessage(
+      mode === 'quick'
+        ? 'Step 1/2: Look directly at the screen in your natural posture.'
+        : 'Step 1/4: Look directly at the screen in your natural posture.'
+    );
+
     let elapsed = 0;
     timerRef.current = setInterval(() => {
       elapsed++;
-      setTestSecondsRemaining(Math.max(0, 20 - elapsed));
+      setTestSecondsRemaining(Math.max(0, durationSec - elapsed));
 
-      if (elapsed < 5) {
-        testPhaseRef.current = 'neutral';
-        setTestPhase('neutral');
-        setPromptMessage('Step 1/4: Look directly at the screen in your natural posture.');
-      } else if (elapsed >= 5 && elapsed < 9) {
-        testPhaseRef.current = 'closure1';
-        setTestPhase('closure1');
-        setPromptMessage('Step 2/4: Close both eyes gently until prompted.');
-      } else if (elapsed >= 9 && elapsed < 13) {
-        testPhaseRef.current = 'reopen';
-        setTestPhase('reopen');
-        setPromptMessage('Step 3/4: Open your eyes and face forward.');
-      } else if (elapsed >= 13 && elapsed < 17) {
-        testPhaseRef.current = 'closure2';
-        setTestPhase('closure2');
-        setPromptMessage('Step 4/4: Close your eyes again for confirmation.');
-      } else if (elapsed >= 17 && elapsed < 20) {
-        testPhaseRef.current = 'pose';
-        setTestPhase('pose');
-        setPromptMessage('Finishing: Hold still while we verify head pose tracking.');
-      } else if (elapsed >= 20) {
-        if (timerRef.current) {
-          clearInterval(timerRef.current);
-          timerRef.current = null;
+      if (mode === 'quick') {
+        if (elapsed < 3) {
+          testPhaseRef.current = 'neutral';
+          setTestPhase('neutral');
+          setPromptMessage('Step 1/2: Look directly at the screen in your natural posture.');
+        } else if (elapsed < 5) {
+          testPhaseRef.current = 'closure1';
+          setTestPhase('closure1');
+          setPromptMessage('Step 2/2: Close both eyes gently for 2 seconds.');
+        } else {
+          if (timerRef.current) {
+            clearInterval(timerRef.current);
+            timerRef.current = null;
+          }
+          finalizeSelfTest();
         }
-        finalizeSelfTest();
+      } else {
+        if (elapsed < 5) {
+          testPhaseRef.current = 'neutral';
+          setTestPhase('neutral');
+          setPromptMessage('Step 1/4: Look directly at the screen in your natural posture.');
+        } else if (elapsed >= 5 && elapsed < 9) {
+          testPhaseRef.current = 'closure1';
+          setTestPhase('closure1');
+          setPromptMessage('Step 2/4: Close both eyes gently until prompted.');
+        } else if (elapsed >= 9 && elapsed < 13) {
+          testPhaseRef.current = 'reopen';
+          setTestPhase('reopen');
+          setPromptMessage('Step 3/4: Open your eyes and face forward.');
+        } else if (elapsed >= 13 && elapsed < 17) {
+          testPhaseRef.current = 'closure2';
+          setTestPhase('closure2');
+          setPromptMessage('Step 4/4: Close your eyes again for confirmation.');
+        } else if (elapsed >= 17 && elapsed < 20) {
+          testPhaseRef.current = 'pose';
+          setTestPhase('pose');
+          setPromptMessage('Finishing: Hold still while we verify head pose tracking.');
+        } else if (elapsed >= 20) {
+          if (timerRef.current) {
+            clearInterval(timerRef.current);
+            timerRef.current = null;
+          }
+          finalizeSelfTest();
+        }
       }
     }, 1000);
   };
@@ -241,7 +276,11 @@ export const ConsentAndSelfTestScreen: React.FC<ConsentAndSelfTestScreenProps> =
       <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '28px' }}>
         <div>
           <h1 style={{ fontSize: '24px', fontWeight: 700, color: '#f8fafc' }}>
-            {step === 'consent' ? 'Camera Consent & Privacy' : step === 'testing' ? 'Guided 20-Second Self-Test' : 'Calibration Results & Verdicts'}
+            {step === 'consent'
+              ? 'Camera Consent & Privacy'
+              : step === 'testing'
+              ? (testMode === 'quick' ? 'Quick 5-Second Calibration' : 'Guided 20-Second Self-Test')
+              : 'Calibration Results & Verdicts'}
           </h1>
           <p style={{ fontSize: '13px', color: '#94a3b8', marginTop: '4px' }}>
             {step === 'consent'
@@ -327,22 +366,49 @@ export const ConsentAndSelfTestScreen: React.FC<ConsentAndSelfTestScreenProps> =
             </span>
           </label>
 
-          <button
-            onClick={handleGrantConsent}
-            style={{
-              marginTop: '12px',
-              padding: '16px',
-              background: '#2563eb',
-              border: 'none',
-              borderRadius: '8px',
-              color: '#fff',
-              fontSize: '15px',
-              fontWeight: 600,
-              cursor: 'pointer'
-            }}
-          >
-            I Acknowledge & Consent to Local Camera Processing
-          </button>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginTop: '12px' }}>
+            <button
+              onClick={() => handleGrantConsent('quick')}
+              style={{
+                padding: '16px',
+                background: 'linear-gradient(135deg, #2563eb, #0284c7)',
+                border: 'none',
+                borderRadius: '8px',
+                color: '#fff',
+                fontSize: '14px',
+                fontWeight: 600,
+                cursor: 'pointer',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: '4px'
+              }}
+            >
+              <span>⚡ Consent & Quick Calibrate (5s)</span>
+              <span style={{ fontSize: '11px', opacity: 0.85, fontWeight: 400 }}>Fast live baseline for instant start</span>
+            </button>
+
+            <button
+              onClick={() => handleGrantConsent('full')}
+              style={{
+                padding: '16px',
+                background: '#1e293b',
+                border: '1px solid #3b82f6',
+                borderRadius: '8px',
+                color: '#f8fafc',
+                fontSize: '14px',
+                fontWeight: 600,
+                cursor: 'pointer',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: '4px'
+              }}
+            >
+              <span>Consent & Full Self-Test (20s)</span>
+              <span style={{ fontSize: '11px', color: '#94a3b8', fontWeight: 400 }}>4-step full accuracy calibration</span>
+            </button>
+          </div>
         </div>
       )}
 
@@ -429,13 +495,30 @@ export const ConsentAndSelfTestScreen: React.FC<ConsentAndSelfTestScreenProps> =
               </div>
 
               {/* Progress Bar */}
-              <div style={{ width: '100%', height: '8px', background: '#0b0f19', borderRadius: '4px', overflow: 'hidden', marginBottom: '28px' }}>
+              <div style={{ width: '100%', height: '8px', background: '#0b0f19', borderRadius: '4px', overflow: 'hidden', marginBottom: '20px' }}>
                 <div style={{
-                  width: `${((20 - testSecondsRemaining) / 20) * 100}%`,
+                  width: `${((totalTestDuration - testSecondsRemaining) / Math.max(1, totalTestDuration)) * 100}%`,
                   height: '100%',
                   background: 'linear-gradient(90deg, #3b82f6, #06b6d4)',
                   transition: 'width 0.3s ease'
                 }} />
+              </div>
+
+              {/* Live Sample Collection Readout */}
+              <div style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                fontSize: '11px',
+                fontFamily: 'monospace',
+                color: '#94a3b8',
+                marginBottom: '16px',
+                padding: '6px 10px',
+                background: '#0b0f19',
+                borderRadius: '6px',
+                border: '1px solid #1e293b'
+              }}>
+                <span>Open-Eye Samples: <strong style={{ color: '#10b981' }}>{sampleCounts.neutral}</strong></span>
+                <span>Closure Samples: <strong style={{ color: '#38bdf8' }}>{sampleCounts.closure}</strong></span>
               </div>
 
               {/* Step Prompt Message */}
