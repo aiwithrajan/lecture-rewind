@@ -18,10 +18,70 @@ interface ReviewAndPrivacyScreenProps {
   initialTab?: 'review' | 'privacy';
 }
 
+interface ActiveReplayClip {
+  id: string;
+  title: string;
+  start: number;
+  end: number;
+  queueIndex?: number;
+}
+
+function parseTimestampTokenToSec(token: string): number {
+  const parts = token.split(':').map((p) => parseInt(p, 10));
+  if (parts.some((n) => Number.isNaN(n))) return 0;
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  return parts[0] || 0;
+}
+
+function extractYouTubeId(rawUrl: string): string | null {
+  if (!rawUrl) return null;
+  try {
+    const parsed = new URL(rawUrl);
+    const host = parsed.hostname.toLowerCase();
+    if (host === 'youtu.be') {
+      const id = parsed.pathname.replace(/^\//, '').split('/')[0];
+      return id && id.length >= 6 ? id : null;
+    }
+    if (host.includes('youtube.com') || host.includes('youtube-nocookie.com')) {
+      const v = parsed.searchParams.get('v');
+      if (v && v.length >= 6) return v;
+      const parts = parsed.pathname.split('/').filter(Boolean);
+      if ((parts[0] === 'embed' || parts[0] === 'shorts' || parts[0] === 'live') && parts[1]) {
+        return parts[1];
+      }
+    }
+  } catch {
+    // Not a URL
+  }
+  return null;
+}
+
+function resolveReplayMediaSrc(source: SessionDocument['source']): string {
+  const raw = source.pathOrUrl;
+  if (!raw) return '';
+  if (
+    raw.startsWith('http://') ||
+    raw.startsWith('https://') ||
+    raw.startsWith('blob:') ||
+    raw.startsWith('local-video:') ||
+    raw.startsWith('file://')
+  ) {
+    return raw;
+  }
+  if (source.type === 'local' && (raw.startsWith('/') || /^[A-Za-z]:\\/.test(raw))) {
+    return `local-video://media?path=${encodeURIComponent(raw)}`;
+  }
+  return raw;
+}
+
 /**
- * Lightweight XSS-safe inline markdown formatter (**bold**, *italic*, `code`, MM:SS timestamp badges).
+ * Lightweight XSS-safe inline markdown formatter (**bold**, *italic*, `code`, clickable MM:SS timestamp badges).
  */
-function renderInlineMarkdown(text: string): React.ReactNode[] {
+function renderInlineMarkdown(
+  text: string,
+  onTimestampClick?: (sec: number) => void
+): React.ReactNode[] {
   const tokenRegex = /(\*\*[^*]+\*\*|`[^`]+`|\*[^*\n]+\*|\b\d{1,2}:\d{2}(?::\d{2})?\b)/g;
   const nodes: React.ReactNode[] = [];
   let lastIndex = 0;
@@ -63,23 +123,32 @@ function renderInlineMarkdown(text: string): React.ReactNode[] {
         </em>
       );
     } else {
-      // Timestamp chip (e.g. 0:35 or 12:04)
+      // Clickable timestamp chip (e.g. 0:35 or 12:04) -> jumps straight into Recovery Clip Player
+      const targetSec = parseTimestampTokenToSec(token);
       nodes.push(
-        <span
+        <button
           key={key++}
+          type="button"
+          onClick={() => onTimestampClick?.(targetSec)}
+          title={`Jump to ${token} in Recovery Clip Player`}
           style={{
-            background: 'rgba(56, 189, 248, 0.14)',
-            border: '1px solid rgba(56, 189, 248, 0.35)',
+            background: 'rgba(56, 189, 248, 0.16)',
+            border: '1px solid rgba(56, 189, 248, 0.45)',
             color: '#38bdf8',
-            padding: '0px 5px',
+            padding: '0px 6px',
             borderRadius: '4px',
             fontFamily: 'var(--font-mono)',
             fontSize: '12px',
-            fontWeight: 600
+            fontWeight: 600,
+            cursor: onTimestampClick ? 'pointer' : 'default',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '3px'
           }}
         >
-          {token}
-        </span>
+          <span>▶</span>
+          <span>{token}</span>
+        </button>
       );
     }
 
@@ -96,7 +165,10 @@ function renderInlineMarkdown(text: string): React.ReactNode[] {
 /**
  * Renders structured LLM Markdown responses into crisp headings, bullet lists, numbered lists & paragraphs.
  */
-function renderFormattedMarkdown(content: string): React.ReactNode {
+function renderFormattedMarkdown(
+  content: string,
+  onTimestampClick?: (sec: number) => void
+): React.ReactNode {
   const lines = content.split(/\r?\n/);
   const elements: React.ReactNode[] = [];
   let listItems: Array<{ ordered: boolean; num?: string; text: string }> = [];
@@ -129,7 +201,7 @@ function renderFormattedMarkdown(content: string): React.ReactNode {
             >
               {isOrdered ? `${item.num}.` : '•'}
             </span>
-            <span style={{ flex: 1, color: '#cbd5e1' }}>{renderInlineMarkdown(item.text)}</span>
+            <span style={{ flex: 1, color: '#cbd5e1' }}>{renderInlineMarkdown(item.text, onTimestampClick)}</span>
           </div>
         ))}
       </div>
@@ -166,7 +238,7 @@ function renderFormattedMarkdown(content: string): React.ReactNode {
             marginBottom: '4px'
           }}
         >
-          {renderInlineMarkdown(headingMatch[2])}
+          {renderInlineMarkdown(headingMatch[2], onTimestampClick)}
         </div>
       );
       continue;
@@ -189,7 +261,7 @@ function renderFormattedMarkdown(content: string): React.ReactNode {
     flushList();
     elements.push(
       <p key={`p-${key++}`} style={{ margin: '2px 0 6px 0', color: '#e2e8f0' }}>
-        {renderInlineMarkdown(line)}
+        {renderInlineMarkdown(line, onTimestampClick)}
       </p>
     );
   }
@@ -231,10 +303,121 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
   const chatEndRef = useRef<HTMLDivElement | null>(null);
   const hasAutoAnalyzedRef = useRef<boolean>(false);
 
+  // Recovery Clip Player state (1-click missed clip replay + sequential playback + mark reviewed)
+  const [activeClip, setActiveClip] = useState<ActiveReplayClip | null>(null);
+  const [isPlayingSequence, setIsPlayingSequence] = useState<boolean>(false);
+  const [reviewedIds, setReviewedIds] = useState<string[]>([]);
+  const [clipCurrentTime, setClipCurrentTime] = useState<number>(0);
+  const clipVideoRef = useRef<HTMLVideoElement | null>(null);
+  const clipPlayerBoxRef = useRef<HTMLDivElement | null>(null);
+
+  const youtubeVideoId = extractYouTubeId(session.source.pathOrUrl);
+  const replayMediaSrc = resolveReplayMediaSrc(session.source);
+  const queueList = session.queue || [];
+
   const durationSec = session.source.duration || 3600;
-  const queueTotalSec = QueueBuilder.calculateTotalDuration(session.queue || []);
+  const queueTotalSec = QueueBuilder.calculateTotalDuration(queueList);
   const headline = QueueBuilder.formatReviewHeadline(durationSec, queueTotalSec);
   const metrics = session.metrics;
+
+  const markClipReviewed = (id: string) => {
+    setReviewedIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
+  };
+
+  const toggleClipReviewed = (id: string) => {
+    setReviewedIds((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    );
+  };
+
+  const openQueueClip = (item: QueueInterval, idx: number, sequential = false) => {
+    setIsPlayingSequence(sequential);
+    setActiveClip({
+      id: item.id,
+      title: item.chapterTitle || `Missed Segment #${idx + 1}`,
+      start: item.start,
+      end: item.end,
+      queueIndex: idx
+    });
+    setClipCurrentTime(item.start);
+    onPlayQueueInterval?.(item);
+    setTimeout(() => {
+      clipPlayerBoxRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 60);
+  };
+
+  const handlePlayAllSequential = () => {
+    if (queueList.length === 0) return;
+    openQueueClip(queueList[0], 0, true);
+  };
+
+  const handleTimestampChipClick = (sec: number) => {
+    const startSec = Math.max(0, sec - 5);
+    const endSec = Math.min(durationSec, sec + 25);
+    setIsPlayingSequence(false);
+    setActiveClip({
+      id: `jump-${sec}-${Date.now()}`,
+      title: `Timestamp Jump (${formatSec(sec)})`,
+      start: startSec,
+      end: endSec
+    });
+    setClipCurrentTime(startSec);
+    setTimeout(() => {
+      clipPlayerBoxRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 60);
+  };
+
+  const handleClipEnded = () => {
+    if (!activeClip) return;
+    if (activeClip.queueIndex !== undefined) {
+      markClipReviewed(activeClip.id);
+      if (isPlayingSequence && activeClip.queueIndex + 1 < queueList.length) {
+        const nextIdx = activeClip.queueIndex + 1;
+        openQueueClip(queueList[nextIdx], nextIdx, true);
+        return;
+      }
+    }
+    setIsPlayingSequence(false);
+  };
+
+  // Seek and auto-play HTML5 local video whenever activeClip changes
+  useEffect(() => {
+    if (!activeClip || youtubeVideoId || !clipVideoRef.current) return;
+    const vid = clipVideoRef.current;
+    const seekAndPlay = () => {
+      vid.currentTime = activeClip.start;
+      vid.play().catch(() => {});
+    };
+    if (vid.readyState >= 1) {
+      seekAndPlay();
+    } else {
+      vid.addEventListener('loadedmetadata', seekAndPlay, { once: true });
+      return () => vid.removeEventListener('loadedmetadata', seekAndPlay);
+    }
+  }, [activeClip, youtubeVideoId]);
+
+  // Detect YouTube clip finish (playerState === 0) to mark reviewed & advance in sequential mode
+  useEffect(() => {
+    if (!activeClip || !youtubeVideoId) return;
+    const onMsg = (ev: MessageEvent) => {
+      if (typeof ev.data !== 'string') return;
+      try {
+        const msg = JSON.parse(ev.data);
+        if (msg.event === 'infoDelivery' && msg.info) {
+          if (typeof msg.info.currentTime === 'number') {
+            setClipCurrentTime(msg.info.currentTime);
+          }
+          if (msg.info.playerState === 0) {
+            handleClipEnded();
+          }
+        }
+      } catch {
+        // Ignore non-JSON messages
+      }
+    };
+    window.addEventListener('message', onMsg);
+    return () => window.removeEventListener('message', onMsg);
+  }, [activeClip, youtubeVideoId, isPlayingSequence]);
 
   useEffect(() => {
     loadNetworkStats();
@@ -777,7 +960,9 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
                     }}>
                       {msg.role === 'user' ? 'You' : 'Lecture Rewind Agent'}
                     </div>
-                    {msg.role === 'assistant' ? renderFormattedMarkdown(msg.content) : msg.content}
+                    {msg.role === 'assistant'
+                      ? renderFormattedMarkdown(msg.content, handleTimestampChipClick)
+                      : msg.content}
                   </div>
                 ))}
 
@@ -950,85 +1135,310 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
               </div>
             </div>
 
+            {/* Recovery Clip Player (Opens on 1-click Queue Play or AI Timestamp Click) */}
+            {activeClip && (
+              <div
+                ref={clipPlayerBoxRef}
+                style={{
+                  background: '#151d2f',
+                  border: '1px solid #38bdf8',
+                  borderRadius: '14px',
+                  overflow: 'hidden',
+                  boxShadow: '0 10px 32px rgba(0, 0, 0, 0.45)'
+                }}
+              >
+                <div style={{
+                  background: '#0b0f19',
+                  borderBottom: '1px solid #1e293b',
+                  padding: '12px 20px',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  flexWrap: 'wrap',
+                  gap: '10px'
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <span style={{
+                      background: 'rgba(56, 189, 248, 0.2)',
+                      color: '#38bdf8',
+                      fontSize: '11px',
+                      fontWeight: 700,
+                      padding: '2px 8px',
+                      borderRadius: '6px',
+                      fontFamily: 'var(--font-mono)'
+                    }}>
+                      {isPlayingSequence ? 'SEQUENTIAL REWIND' : 'RECOVERY CLIP'}
+                    </span>
+                    <span style={{ fontSize: '14px', fontWeight: 600, color: '#f8fafc' }}>
+                      {activeClip.title}
+                    </span>
+                    <span style={{ fontSize: '12px', color: '#94a3b8', fontFamily: 'var(--font-mono)' }}>
+                      {formatSec(activeClip.start)} → {formatSec(activeClip.end)}
+                    </span>
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <button
+                      onClick={() => {
+                        if (clipVideoRef.current && !youtubeVideoId) {
+                          clipVideoRef.current.currentTime = activeClip.start;
+                          clipVideoRef.current.play().catch(() => {});
+                        } else {
+                          setActiveClip({ ...activeClip });
+                        }
+                      }}
+                      style={{
+                        background: '#1e293b',
+                        border: '1px solid #334155',
+                        color: '#cbd5e1',
+                        padding: '5px 10px',
+                        borderRadius: '6px',
+                        fontSize: '12px',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      ↺ Replay
+                    </button>
+
+                    {activeClip.queueIndex !== undefined && activeClip.queueIndex + 1 < queueList.length && (
+                      <button
+                        onClick={() => openQueueClip(queueList[activeClip.queueIndex! + 1], activeClip.queueIndex! + 1, isPlayingSequence)}
+                        style={{
+                          background: '#2563eb',
+                          border: 'none',
+                          color: '#fff',
+                          padding: '5px 12px',
+                          borderRadius: '6px',
+                          fontSize: '12px',
+                          fontWeight: 600,
+                          cursor: 'pointer'
+                        }}
+                      >
+                        Next Clip ▶
+                      </button>
+                    )}
+
+                    {activeClip.queueIndex !== undefined && (
+                      <button
+                        onClick={() => toggleClipReviewed(activeClip.id)}
+                        style={{
+                          background: reviewedIds.includes(activeClip.id) ? 'rgba(16, 185, 129, 0.2)' : '#1e293b',
+                          border: `1px solid ${reviewedIds.includes(activeClip.id) ? '#10b981' : '#334155'}`,
+                          color: reviewedIds.includes(activeClip.id) ? '#34d399' : '#cbd5e1',
+                          padding: '5px 10px',
+                          borderRadius: '6px',
+                          fontSize: '12px',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        {reviewedIds.includes(activeClip.id) ? '✓ Reviewed' : 'Mark Reviewed'}
+                      </button>
+                    )}
+
+                    <button
+                      onClick={() => {
+                        setIsPlayingSequence(false);
+                        setActiveClip(null);
+                      }}
+                      style={{
+                        background: 'transparent',
+                        border: '1px solid #334155',
+                        color: '#94a3b8',
+                        padding: '5px 10px',
+                        borderRadius: '6px',
+                        fontSize: '12px',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      ✕ Close
+                    </button>
+                  </div>
+                </div>
+
+                {/* Embedded Recovery Player */}
+                <div style={{ background: '#000', height: '340px', position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  {youtubeVideoId ? (
+                    <iframe
+                      key={`${activeClip.id}-${activeClip.start}-${activeClip.end}`}
+                      src={`https://www.youtube.com/embed/${youtubeVideoId}?start=${Math.floor(activeClip.start)}&end=${Math.ceil(activeClip.end)}&autoplay=1&enablejsapi=1&rel=0&modestbranding=1`}
+                      title={activeClip.title}
+                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                      allowFullScreen
+                      style={{ width: '100%', height: '100%', border: 'none' }}
+                    />
+                  ) : (
+                    <video
+                      ref={clipVideoRef}
+                      src={replayMediaSrc}
+                      controls
+                      onTimeUpdate={() => {
+                        if (!clipVideoRef.current || !activeClip) return;
+                        const t = clipVideoRef.current.currentTime;
+                        setClipCurrentTime(t);
+                        if (t >= activeClip.end) {
+                          clipVideoRef.current.pause();
+                          handleClipEnded();
+                        }
+                      }}
+                      style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+                    />
+                  )}
+                </div>
+
+                {/* Clip Progress Strip */}
+                <div style={{ padding: '8px 20px', background: '#0b0f19', display: 'flex', alignItems: 'center', gap: '12px' }}>
+                  <span style={{ fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-mono)' }}>
+                    {formatSec(clipCurrentTime)}
+                  </span>
+                  <div style={{ flex: 1, height: '6px', background: '#1e293b', borderRadius: '3px', overflow: 'hidden' }}>
+                    <div style={{
+                      width: `${Math.max(0, Math.min(100, ((clipCurrentTime - activeClip.start) / Math.max(1, activeClip.end - activeClip.start)) * 100))}%`,
+                      height: '100%',
+                      background: 'linear-gradient(90deg, #3b82f6, #38bdf8)',
+                      transition: 'width 0.15s linear'
+                    }} />
+                  </div>
+                  <span style={{ fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-mono)' }}>
+                    {formatSec(activeClip.end)}
+                  </span>
+                </div>
+              </div>
+            )}
+
             {/* Rewind Queue Items List */}
             <div style={{ background: '#151d2f', border: '1px solid #2e3c54', borderRadius: '12px', padding: '24px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-                <h2 style={{ fontSize: '16px', fontWeight: 600, color: '#f8fafc' }}>
-                  Rewind Queue Items ({(session.queue || []).length})
-                </h2>
-                <span style={{ fontSize: '12px', color: '#94a3b8' }}>
-                  Play sequentially to recover all missed segments
-                </span>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '12px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                  <h2 style={{ fontSize: '16px', fontWeight: 600, color: '#f8fafc' }}>
+                    Rewind Queue Items ({queueList.length})
+                  </h2>
+                  {queueList.length > 0 && (
+                    <span style={{
+                      fontSize: '11px',
+                      fontFamily: 'var(--font-mono)',
+                      padding: '2px 8px',
+                      borderRadius: '10px',
+                      background: reviewedIds.length === queueList.length ? 'rgba(16, 185, 129, 0.2)' : 'rgba(56, 189, 248, 0.14)',
+                      border: `1px solid ${reviewedIds.length === queueList.length ? '#10b981' : '#38bdf8'}`,
+                      color: reviewedIds.length === queueList.length ? '#34d399' : '#38bdf8'
+                    }}>
+                      Reviewed: {reviewedIds.length} / {queueList.length}
+                    </span>
+                  )}
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                  {queueList.length > 0 && (
+                    <button
+                      onClick={handlePlayAllSequential}
+                      style={{
+                        background: 'linear-gradient(135deg, #2563eb, #0284c7)',
+                        color: '#fff',
+                        border: 'none',
+                        padding: '7px 14px',
+                        borderRadius: '8px',
+                        cursor: 'pointer',
+                        fontSize: '12px',
+                        fontWeight: 600
+                      }}
+                    >
+                      ▶ Play All Missed Clips
+                    </button>
+                  )}
+                </div>
               </div>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                {(session.queue || []).length === 0 ? (
+                {queueList.length === 0 ? (
                   <div style={{ textAlign: 'center', color: '#64748b', padding: '30px', fontSize: '13px' }}>
                     No absence intervals detected. You watched the entire lecture!
                   </div>
                 ) : (
-                  (session.queue || []).map((item, idx) => (
-                    <div
-                      key={item.id}
-                      style={{
-                        background: '#1e293b',
-                        border: '1px solid #2e3c54',
-                        borderRadius: '8px',
-                        padding: '14px 20px',
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'center'
-                      }}
-                    >
-                      <div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                          <span style={{
-                            background: '#2563eb',
-                            color: '#fff',
-                            width: '24px',
-                            height: '24px',
-                            borderRadius: '50%',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            fontSize: '12px',
-                            fontWeight: 700
-                          }}>
-                            {idx + 1}
-                          </span>
-                          <span style={{ fontSize: '14px', fontWeight: 600, color: '#f8fafc' }}>
-                            {item.chapterTitle || `Segment ${idx + 1}`}
-                          </span>
+                  queueList.map((item, idx) => {
+                    const isReviewed = reviewedIds.includes(item.id);
+                    const isCurrentlyPlaying = activeClip?.id === item.id;
+                    return (
+                      <div
+                        key={item.id}
+                        style={{
+                          background: isCurrentlyPlaying ? 'rgba(37, 99, 235, 0.18)' : '#1e293b',
+                          border: `1px solid ${isCurrentlyPlaying ? '#38bdf8' : isReviewed ? '#10b981' : '#2e3c54'}`,
+                          borderRadius: '8px',
+                          padding: '14px 20px',
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          opacity: isReviewed && !isCurrentlyPlaying ? 0.78 : 1
+                        }}
+                      >
+                        <div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                            <span style={{
+                              background: isReviewed ? '#10b981' : '#2563eb',
+                              color: '#fff',
+                              width: '24px',
+                              height: '24px',
+                              borderRadius: '50%',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              fontSize: '12px',
+                              fontWeight: 700
+                            }}>
+                              {isReviewed ? '✓' : idx + 1}
+                            </span>
+                            <span style={{ fontSize: '14px', fontWeight: 600, color: '#f8fafc' }}>
+                              {item.chapterTitle || `Segment ${idx + 1}`}
+                            </span>
+                            {isCurrentlyPlaying && (
+                              <span style={{ fontSize: '10px', color: '#38bdf8', fontWeight: 700, fontFamily: 'var(--font-mono)' }}>
+                                NOW PLAYING
+                              </span>
+                            )}
+                          </div>
+                          <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '4px', marginLeft: '34px' }}>
+                            Range: {formatSec(item.start)} → {formatSec(item.end)} (+10s pre-roll applied)
+                          </div>
                         </div>
-                        <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '4px', marginLeft: '34px' }}>
-                          Range: {formatSec(item.start)} → {formatSec(item.end)} (+10s pre-roll applied)
-                        </div>
-                      </div>
 
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-                        <span style={{ fontSize: '14px', fontWeight: 600, color: '#38bdf8', fontFamily: 'monospace' }}>
-                          {item.duration}s
-                        </span>
-                        {onPlayQueueInterval && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                          <span style={{ fontSize: '13px', fontWeight: 600, color: '#38bdf8', fontFamily: 'monospace' }}>
+                            {item.duration}s
+                          </span>
                           <button
-                            onClick={() => onPlayQueueInterval(item)}
+                            onClick={() => toggleClipReviewed(item.id)}
                             style={{
-                              background: '#3b82f6',
+                              background: isReviewed ? 'rgba(16, 185, 129, 0.2)' : 'transparent',
+                              border: `1px solid ${isReviewed ? '#10b981' : '#334155'}`,
+                              color: isReviewed ? '#34d399' : '#94a3b8',
+                              padding: '6px 10px',
+                              borderRadius: '6px',
+                              cursor: 'pointer',
+                              fontSize: '11px',
+                              fontWeight: 500
+                            }}
+                          >
+                            {isReviewed ? '✓ Reviewed' : 'Mark Reviewed'}
+                          </button>
+                          <button
+                            onClick={() => openQueueClip(item, idx, false)}
+                            style={{
+                              background: isCurrentlyPlaying ? '#0284c7' : '#3b82f6',
                               color: '#fff',
                               border: 'none',
                               padding: '6px 14px',
                               borderRadius: '6px',
                               cursor: 'pointer',
                               fontSize: '12px',
-                              fontWeight: 500
+                              fontWeight: 600
                             }}
                           >
-                            Play ▶
+                            {isCurrentlyPlaying ? 'Playing...' : 'Play Clip ▶'}
                           </button>
-                        )}
+                        </div>
                       </div>
-                    </div>
-                  ))
+                    );
+                  })
                 )}
               </div>
             </div>
