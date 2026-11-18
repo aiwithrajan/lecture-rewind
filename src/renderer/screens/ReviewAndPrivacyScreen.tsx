@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   AgentChatMessage,
   AgentEngineMode,
@@ -314,9 +314,34 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
 
   const youtubeVideoId = extractYouTubeId(session.source.pathOrUrl);
   const replayMediaSrc = resolveReplayMediaSrc(session.source);
-  const queueList = session.queue || [];
-
   const durationSec = session.source.duration || 3600;
+
+  // Re-derive clean queue if the raw session queue was merged into a single video-length block
+  // by legacy double-blink chatter, guaranteeing the user only replays actual missed segments!
+  const queueList = useMemo(() => {
+    const rawQueue = session.queue || [];
+    const isSwallowedByLegacyChatter =
+      rawQueue.length === 1 &&
+      rawQueue[0].duration >= durationSec * 0.85 &&
+      (session.events || []).some((e) => e.type === 'pause' || e.type === 'marker');
+
+    if (isSwallowedByLegacyChatter) {
+      const cleanEvents = (session.events || []).filter((e) => e.type === 'pause' || e.type === 'marker');
+      const rebuilt = QueueBuilder.buildRewindQueue(
+        cleanEvents,
+        session.quality || [],
+        session.source.chapters || [],
+        durationSec
+      );
+      if (rebuilt.length > 0) return rebuilt;
+    }
+    return rawQueue;
+  }, [session, durationSec]);
+
+  const missedEvents = useMemo(() => {
+    return (session.events || []).filter((e) => e.type === 'pause' || e.type === 'marker');
+  }, [session.events]);
+
   const queueTotalSec = QueueBuilder.calculateTotalDuration(queueList);
   const headline = QueueBuilder.formatReviewHeadline(durationSec, queueTotalSec);
   const metrics = session.metrics;
@@ -1372,14 +1397,17 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
                   {(session.events || []).map((ev, i) => (
                     <div
                       key={i}
-                      title={`${ev.type} (${formatSec(ev.start)} - ${formatSec(ev.end)})`}
+                      title={`Click to replay ${ev.type.toUpperCase()} at ${formatSec(ev.start)}: ${ev.note || ev.type}`}
+                      onClick={() => handleTimestampChipClick(ev.start)}
                       style={{
                         position: 'absolute',
                         left: `${(ev.start / durationSec) * 100}%`,
-                        width: `${Math.max(0.8, ((ev.end - ev.start) / durationSec) * 100)}%`,
+                        width: `${Math.max(1.2, ((ev.end - ev.start) / durationSec) * 100)}%`,
                         height: '100%',
                         background: ev.type === 'pause' ? '#f43f5e' : ev.type === 'bookmark' ? '#10b981' : '#f59e0b',
-                        borderRadius: '2px'
+                        borderRadius: '2px',
+                        cursor: 'pointer',
+                        transition: 'opacity 0.15s'
                       }}
                     />
                   ))}
@@ -1393,17 +1421,20 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
                   <span style={{ color: '#38bdf8' }}>Total: {formatSec(queueTotalSec)}</span>
                 </div>
                 <div style={{ height: '14px', background: '#0b0f19', borderRadius: '4px', position: 'relative', overflow: 'hidden' }}>
-                  {(session.queue || []).map((q, i) => (
+                  {(queueList || []).map((q, i) => (
                     <div
                       key={i}
-                      title={`Queue #${i + 1}: ${formatSec(q.start)} - ${formatSec(q.end)} (${q.chapterTitle || 'General'})`}
+                      title={`Click to play Queue #${i + 1}: ${formatSec(q.start)} - ${formatSec(q.end)} (${q.chapterTitle || 'General'})`}
+                      onClick={() => openQueueClip(q, i, false)}
                       style={{
                         position: 'absolute',
                         left: `${(q.start / durationSec) * 100}%`,
-                        width: `${((q.end - q.start) / durationSec) * 100}%`,
+                        width: `${Math.max(1.5, ((q.end - q.start) / durationSec) * 100)}%`,
                         height: '100%',
                         background: '#38bdf8',
-                        borderRadius: '2px'
+                        borderRadius: '2px',
+                        cursor: 'pointer',
+                        transition: 'opacity 0.15s'
                       }}
                     />
                   ))}
@@ -1717,6 +1748,93 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
                   })
                 )}
               </div>
+
+              {/* Individual Detected Missed Moments (Instant 1-Click Lapses Replay) */}
+              {missedEvents.length > 0 && (
+                <div style={{ marginTop: '24px', paddingTop: '20px', borderTop: '1px solid #2e3c54' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span style={{ fontSize: '14px', fontWeight: 600, color: '#f8fafc' }}>
+                        Individual Detected Missed Lapses ({missedEvents.length})
+                      </span>
+                      <span style={{ fontSize: '11px', color: '#94a3b8' }}>
+                        (Exact timestamps where absence or closure was detected)
+                      </span>
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    {missedEvents.map((ev, i) => {
+                      const isCurrent = activeClip?.id === `event-${ev.id}`;
+                      const dur = Math.max(1, Math.round(ev.end - ev.start));
+                      return (
+                        <div
+                          key={ev.id || i}
+                          style={{
+                            background: isCurrent ? 'rgba(37, 99, 235, 0.18)' : '#101625',
+                            border: `1px solid ${isCurrent ? '#38bdf8' : '#233048'}`,
+                            borderRadius: '8px',
+                            padding: '10px 16px',
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center'
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                            <span style={{
+                              width: '8px',
+                              height: '8px',
+                              borderRadius: '50%',
+                              background: ev.type === 'pause' ? '#f43f5e' : '#f59e0b'
+                            }} />
+                            <span style={{ fontSize: '13px', fontWeight: 600, color: '#f8fafc' }}>
+                              Lapse #{i + 1}: {formatSec(ev.start)} → {formatSec(ev.end)}
+                            </span>
+                            <span style={{ fontSize: '11px', color: '#94a3b8', fontStyle: 'italic' }}>
+                              ({ev.note || (ev.type === 'pause' ? 'Absence Auto-Pause' : 'Brief Eye Closure')})
+                            </span>
+                          </div>
+
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                            <span style={{ fontSize: '12px', color: '#38bdf8', fontFamily: 'monospace' }}>
+                              {dur}s missed
+                            </span>
+                            <button
+                              onClick={() => {
+                                const startSec = Math.max(0, ev.start - 5);
+                                const endSec = Math.min(durationSec, ev.end + 2);
+                                setIsPlayingSequence(false);
+                                setActiveClip({
+                                  id: `event-${ev.id}`,
+                                  title: `Missed Lapse #${i + 1} (${formatSec(ev.start)} → ${formatSec(ev.end)})`,
+                                  start: startSec,
+                                  end: endSec
+                                });
+                                setClipCurrentTime(startSec);
+                                setTimeout(() => {
+                                  clipPlayerBoxRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                }, 60);
+                              }}
+                              style={{
+                                background: isCurrent ? '#0284c7' : '#2563eb',
+                                color: '#fff',
+                                border: 'none',
+                                padding: '5px 12px',
+                                borderRadius: '6px',
+                                cursor: 'pointer',
+                                fontSize: '11px',
+                                fontWeight: 600
+                              }}
+                            >
+                              {isCurrent ? 'Playing Clip...' : '▶ Play Missed Clip'}
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         ) : (

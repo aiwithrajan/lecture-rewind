@@ -34,6 +34,7 @@ export class EvidenceEvaluator {
 
   // Double blink detection for Evidence F
   private lastBlinkTimestamp: number = -1;
+  private lastBookmarkEmittedTimestamp: number = -1;
   private previousBlinkState: boolean = false;
 
   // Frame timing
@@ -211,15 +212,19 @@ export class EvidenceEvaluator {
       this.yawTurnedDurationSec = 0;
     }
 
-    // Evidence F: Double blink manual gesture detection (rising edge within 800ms)
+    // Evidence F: Double blink manual gesture detection (intentional double blink within 180ms - 800ms)
     const currentBlink = Boolean(frame.blink);
     if (currentBlink && !this.previousBlinkState) {
-      // Rising edge
-      if (this.lastBlinkTimestamp >= 0 && (timestamp - this.lastBlinkTimestamp) <= 0.8) {
+      // Rising edge of a blink
+      const dt = this.lastBlinkTimestamp >= 0 ? timestamp - this.lastBlinkTimestamp : -1;
+      const cooldownPassed = this.lastBookmarkEmittedTimestamp < 0 || (timestamp - this.lastBookmarkEmittedTimestamp) >= 3.5;
+
+      if (cooldownPassed && dt >= 0.18 && dt <= 0.8) {
         bookmarks.push({
           id: 'F',
           note: 'Double-blink gesture bookmark'
         });
+        this.lastBookmarkEmittedTimestamp = timestamp;
         this.lastBlinkTimestamp = -1; // reset
       } else {
         this.lastBlinkTimestamp = timestamp;
