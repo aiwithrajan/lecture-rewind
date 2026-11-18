@@ -150,7 +150,7 @@ export interface SessionDocument {
 }
 
 // 17. Hybrid Session Review Agent Contracts (Gemini + Local Open-Source Ollama Failover)
-export type AgentEngineMode = 'auto' | 'gemini' | 'ollama';
+export type AgentEngineMode = 'auto' | 'gemini' | 'ollama' | 'offline';
 export type AgentLanguage = 'hinglish' | 'english';
 
 export interface AgentChatMessage {

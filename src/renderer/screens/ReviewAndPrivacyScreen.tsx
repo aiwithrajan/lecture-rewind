@@ -302,6 +302,7 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
   const [chatInput, setChatInput] = useState<string>('');
   const chatEndRef = useRef<HTMLDivElement | null>(null);
   const hasAutoAnalyzedRef = useRef<boolean>(false);
+  const [loadingElapsedSec, setLoadingElapsedSec] = useState<number>(0);
 
   // Recovery Clip Player state (1-click missed clip replay + sequential playback + mark reviewed)
   const [activeClip, setActiveClip] = useState<ActiveReplayClip | null>(null);
@@ -451,9 +452,46 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
       !hasAutoAnalyzedRef.current
     ) {
       hasAutoAnalyzedRef.current = true;
-      runAgentQuery();
+      (async () => {
+        // Step 1: Render instant offline overview in 0.001s so the screen is never blank!
+        try {
+          if ((window as any).rewindApi?.agent) {
+            const instantRes: AgentResponse = await (window as any).rewindApi.agent.query({
+              session,
+              engine: 'offline',
+              language: agentLanguage
+            });
+            setChatMessages([{ role: 'assistant', content: instantRes.answer }]);
+            setAgentMeta({
+              providerUsed: instantRes.providerUsed,
+              modelUsed: instantRes.modelUsed,
+              failoverReason: instantRes.failoverReason,
+              transcriptContext: instantRes.transcriptContext
+            });
+          }
+        } catch {
+          // Ignore
+        }
+
+        // Step 2: If configured engine is not offline, run fast AI enhancement
+        if (agentEngine !== 'offline') {
+          runAgentQuery();
+        }
+      })();
     }
   }, [activeTab, session.id]);
+
+  useEffect(() => {
+    if (!agentLoading) {
+      setLoadingElapsedSec(0);
+      return;
+    }
+    const start = Date.now();
+    const timer = setInterval(() => {
+      setLoadingElapsedSec((Date.now() - start) / 1000);
+    }, 100);
+    return () => clearInterval(timer);
+  }, [agentLoading]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -483,8 +521,6 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
     if (trimmedQ) {
       setChatMessages((prev) => [...prev, { role: 'user', content: trimmedQ }]);
       setChatInput('');
-    } else {
-      setChatMessages([]);
     }
 
     setAgentLoading(true);
@@ -504,7 +540,11 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
           failoverReason: res.failoverReason,
           transcriptContext: res.transcriptContext
         });
-        setChatMessages((prev) => [...prev, { role: 'assistant', content: res.answer }]);
+        if (trimmedQ) {
+          setChatMessages((prev) => [...prev, { role: 'assistant', content: res.answer }]);
+        } else {
+          setChatMessages([{ role: 'assistant', content: res.answer }]);
+        }
       } else {
         setChatMessages((prev) => [
           ...prev,
@@ -987,7 +1027,11 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                   <select
                     value={agentEngine}
-                    onChange={(e) => setAgentEngine(e.target.value as AgentEngineMode)}
+                    onChange={(e) => {
+                      const nextEngine = e.target.value as AgentEngineMode;
+                      setAgentEngine(nextEngine);
+                      runAgentQuery(undefined, nextEngine);
+                    }}
                     title="Select AI Engine"
                     style={{
                       background: '#0b0f19',
@@ -999,19 +1043,28 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
                       cursor: 'pointer'
                     }}
                   >
-                    <option value="auto">Auto (Gemini → Local Ollama)</option>
+                    <option value="auto">Auto (Gemini ⚡ Fast → Local Ollama)</option>
                     <option value="gemini" disabled={!agentStatus.geminiConfigured}>
-                      Gemini 2.5 Flash {!agentStatus.geminiConfigured ? '(No Key)' : ''}
+                      Gemini 2.5 Flash (⚡ Fast) {!agentStatus.geminiConfigured ? '(No Key)' : ''}
                     </option>
                     <option value="ollama">
                       Local Open-Source (Ollama)
+                    </option>
+                    <option value="offline">
+                      ⚡ Instant Engine (Offline, 0.0s)
                     </option>
                   </select>
 
                   {agentStatus.ollamaModels.length > 0 && (
                     <select
                       value={selectedOllamaModel}
-                      onChange={(e) => setSelectedOllamaModel(e.target.value)}
+                      onChange={(e) => {
+                        const nextModel = e.target.value;
+                        setSelectedOllamaModel(nextModel);
+                        if (agentEngine === 'ollama') {
+                          runAgentQuery(undefined, 'ollama');
+                        }
+                      }}
                       title="Local Open-Source Ollama Model (Failover / Local Mode)"
                       style={{
                         background: '#0b0f19',
@@ -1033,7 +1086,11 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
 
                   <select
                     value={agentLanguage}
-                    onChange={(e) => setAgentLanguage(e.target.value as AgentLanguage)}
+                    onChange={(e) => {
+                      const nextLang = e.target.value as AgentLanguage;
+                      setAgentLanguage(nextLang);
+                      runAgentQuery(undefined, undefined, nextLang);
+                    }}
                     title="Response Language"
                     style={{
                       background: '#0b0f19',
@@ -1060,10 +1117,20 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
                       borderRadius: '6px',
                       fontSize: '12px',
                       fontWeight: 600,
-                      cursor: agentLoading ? 'wait' : 'pointer'
+                      cursor: agentLoading ? 'wait' : 'pointer',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '6px'
                     }}
                   >
-                    {agentLoading ? 'Analyzing...' : 'Re-Analyze JSON'}
+                    {agentLoading ? (
+                      <>
+                        <span style={{ display: 'inline-block', width: '8px', height: '8px', borderRadius: '50%', background: '#38bdf8', animation: 'pulse 1s infinite' }} />
+                        <span>Analyzing ({loadingElapsedSec.toFixed(1)}s)...</span>
+                      </>
+                    ) : (
+                      'Re-Analyze JSON'
+                    )}
                   </button>
                 </div>
               </div>
@@ -1135,13 +1202,56 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
                 {agentLoading && (
                   <div style={{
                     background: '#151d2f',
-                    border: '1px solid #2e3c54',
+                    border: '1px solid rgba(56, 189, 248, 0.4)',
                     borderRadius: '10px',
                     padding: '12px 14px',
-                    fontSize: '13px',
-                    color: '#38bdf8'
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '8px'
                   }}>
-                    Analyzing session JSON timestamps and metrics...
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span style={{
+                          display: 'inline-block',
+                          width: '8px',
+                          height: '8px',
+                          borderRadius: '50%',
+                          background: '#38bdf8'
+                        }} />
+                        <span style={{ color: '#38bdf8', fontSize: '13px', fontWeight: 600 }}>
+                          Analyzing session JSON timestamps ({loadingElapsedSec.toFixed(1)}s)...
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAgentEngine('offline');
+                          runAgentQuery(undefined, 'offline');
+                        }}
+                        style={{
+                          background: 'rgba(56, 189, 248, 0.16)',
+                          border: '1px solid #38bdf8',
+                          color: '#38bdf8',
+                          padding: '3px 8px',
+                          borderRadius: '6px',
+                          fontSize: '11px',
+                          fontWeight: 600,
+                          cursor: 'pointer'
+                        }}
+                      >
+                        ⚡ Show Instant Summary (0.0s)
+                      </button>
+                    </div>
+                    <div style={{ width: '100%', height: '3px', background: '#0b0f19', borderRadius: '2px', overflow: 'hidden' }}>
+                      <div
+                        style={{
+                          height: '100%',
+                          width: `${Math.min(100, Math.max(15, (loadingElapsedSec / 2.5) * 100))}%`,
+                          background: 'linear-gradient(90deg, #38bdf8, #818cf8)',
+                          transition: 'width 0.15s ease-out'
+                        }}
+                      />
+                    </div>
                   </div>
                 )}
                 <div ref={chatEndRef} />

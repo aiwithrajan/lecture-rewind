@@ -303,6 +303,16 @@ export class SessionReviewAgent {
     const userPrompt = req.question?.trim() || this.buildDefaultAnalysisPrompt(language);
     const history = req.history || [];
 
+    // Instant Deterministic Engine (Zero Latency 0.0s, Zero Cloud / GPU Dependency)
+    if (engine === 'offline') {
+      return {
+        answer: this.buildOfflineFallback(req.session, language, req.question, ytContext),
+        providerUsed: 'offline',
+        modelUsed: 'Instant Offline Engine (0.0s)',
+        transcriptContext
+      };
+    }
+
     // Force Local Open-Source Ollama
     if (engine === 'ollama') {
       try {
@@ -317,8 +327,8 @@ export class SessionReviewAgent {
         return {
           answer: this.buildOfflineFallback(req.session, language, req.question, ytContext),
           providerUsed: 'offline',
-          modelUsed: 'Local Deterministic Analyzer',
-          failoverReason: `Ollama unavailable (${err?.message || 'not running'}). Start Ollama with "ollama serve" to use local open-source models.`,
+          modelUsed: 'Instant Offline Engine (0.0s)',
+          failoverReason: `Ollama unavailable (${err?.message || 'not running'}). Using Instant Offline Analysis.`,
           transcriptContext
         };
       }
@@ -342,8 +352,8 @@ export class SessionReviewAgent {
           return {
             answer: this.buildOfflineFallback(req.session, language, req.question, ytContext),
             providerUsed: 'offline',
-            modelUsed: 'Local Deterministic Analyzer',
-            failoverReason: `Gemini error: ${geminiFailReason}`,
+            modelUsed: 'Instant Offline Engine (0.0s)',
+            failoverReason: `Gemini error: ${geminiFailReason}. Switched to Instant Analysis.`,
             transcriptContext
           };
         }
@@ -376,7 +386,7 @@ export class SessionReviewAgent {
     return {
       answer: this.buildOfflineFallback(req.session, language, req.question, ytContext),
       providerUsed: 'offline',
-      modelUsed: 'Local Deterministic Analyzer',
+      modelUsed: 'Instant Offline Engine (0.0s)',
       failoverReason: geminiFailReason,
       transcriptContext
     };
@@ -402,7 +412,7 @@ export class SessionReviewAgent {
     ];
 
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 22000);
+    const timer = setTimeout(() => controller.abort(), 7500);
 
     try {
       const res = await fetch(url, {
@@ -413,8 +423,9 @@ export class SessionReviewAgent {
           systemInstruction: { parts: [{ text: systemPrompt }] },
           contents,
           generationConfig: {
-            temperature: 0.3,
-            maxOutputTokens: 900
+            temperature: 0.2,
+            maxOutputTokens: 420,
+            thinkingConfig: { thinkingBudget: 0 }
           }
         })
       });
@@ -456,7 +467,7 @@ export class SessionReviewAgent {
     ];
 
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 60000);
+    const timer = setTimeout(() => controller.abort(), 12000);
 
     try {
       const res = await fetch(`${ollamaUrl}/api/chat`, {
@@ -468,8 +479,10 @@ export class SessionReviewAgent {
           messages,
           stream: false,
           options: {
-            temperature: 0.3,
-            num_predict: 650
+            temperature: 0.2,
+            num_predict: 280,
+            top_k: 20,
+            top_p: 0.85
           }
         })
       });
