@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { SessionDocument, VideoSource } from '@shared/types';
 import { QueueBuilder } from '../engine/QueueBuilder';
+import { SessionInsights } from '../engine/SessionInsights';
 
 interface HomeScreenProps {
   onStartSession: (source: VideoSource, simulatedMode: boolean) => void;
@@ -43,45 +44,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   // FR-12 Session history: When 3 or more sessions of the same source exist,
   // report typical absence offset and offer to schedule a break there.
   const sourceInsights = useMemo(() => {
-    const groups: Record<string, { source: VideoSource; sessions: SessionDocument[] }> = {};
-    for (const s of recentSessions) {
-      const key = s.source.pathOrUrl || s.source.name;
-      if (!groups[key]) {
-        groups[key] = { source: s.source, sessions: [] };
-      }
-      groups[key].sessions.push(s);
-    }
-
-    const insights: Array<{
-      source: VideoSource;
-      sessionCount: number;
-      typicalOffsetSec: number;
-    }> = [];
-
-    for (const group of Object.values(groups)) {
-      if (group.sessions.length >= 3) {
-        const absenceTimes: number[] = [];
-        for (const s of group.sessions) {
-          for (const ev of s.events || []) {
-            if (ev.type === 'pause' || ev.type === 'marker') {
-              absenceTimes.push(ev.start);
-            }
-          }
-        }
-
-        if (absenceTimes.length > 0) {
-          absenceTimes.sort((a, b) => a - b);
-          const median = absenceTimes[Math.floor(absenceTimes.length / 2)];
-          insights.push({
-            source: group.source,
-            sessionCount: group.sessions.length,
-            typicalOffsetSec: Math.round(median)
-          });
-        }
-      }
-    }
-
-    return insights;
+    return SessionInsights.calculateSourceInsights(recentSessions);
   }, [recentSessions]);
 
   const handlePickLocalFile = async () => {

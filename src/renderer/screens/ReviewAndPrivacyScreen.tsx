@@ -10,6 +10,7 @@ import {
   SessionDocument
 } from '@shared/types';
 import { QueueBuilder } from '../engine/QueueBuilder';
+import { SessionInsights } from '../engine/SessionInsights';
 
 interface ReviewAndPrivacyScreenProps {
   session: SessionDocument;
@@ -1474,14 +1475,7 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
                       <line x1="0" y1="26" x2="1000" y2="26" stroke="#1e293b" strokeDasharray="3,3" />
                       <line x1="0" y1="10" x2="1000" y2="10" stroke="#1e293b" strokeDasharray="3,3" />
                       <path
-                        d={(() => {
-                          const pts = session.pulse || [];
-                          return pts.map((p, idx) => {
-                            const x = Math.min(1000, Math.max(0, (p.timestamp / durationSec) * 1000));
-                            const y = Math.min(34, Math.max(4, 34 - ((p.value - 40) / 70) * 30));
-                            return `${idx === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`;
-                          }).join(' ');
-                        })()}
+                        d={SessionInsights.calculatePulseSvgPath(session.pulse || [], durationSec)}
                         fill="none"
                         stroke="#ec4899"
                         strokeWidth="1.5"

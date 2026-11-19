@@ -10,7 +10,7 @@ import {
   SessionDocument
 } from '@shared/types';
 
-function formatTimestamp(sec: number): string {
+export function formatTimestamp(sec: number): string {
   const safe = Math.max(0, Math.floor(sec || 0));
   const hrs = Math.floor(safe / 3600);
   const mins = Math.floor((safe % 3600) / 60);
@@ -21,7 +21,7 @@ function formatTimestamp(sec: number): string {
   return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
 }
 
-function formatDurationHuman(sec: number): string {
+export function formatDurationHuman(sec: number): string {
   const safe = Math.max(0, Math.round(sec || 0));
   if (safe < 60) return `${safe}s`;
   const mins = Math.floor(safe / 60);
@@ -29,19 +29,19 @@ function formatDurationHuman(sec: number): string {
   return rem > 0 ? `${mins}m ${rem}s` : `${mins}m`;
 }
 
-interface CaptionCue {
+export interface CaptionCue {
   startSec: number;
   endSec: number;
   text: string;
 }
 
-interface YouTubeVideoContext {
+export interface YouTubeVideoContext {
   videoId: string;
   title?: string;
   cues: CaptionCue[];
 }
 
-function extractYouTubeVideoId(rawUrl: string): string | null {
+export function extractYouTubeVideoId(rawUrl: string): string | null {
   if (!rawUrl) return null;
   try {
     const parsed = new URL(rawUrl);
@@ -64,7 +64,7 @@ function extractYouTubeVideoId(rawUrl: string): string | null {
   return null;
 }
 
-function decodeHtmlEntities(str: string): string {
+export function decodeHtmlEntities(str: string): string {
   return str
     .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
@@ -72,12 +72,12 @@ function decodeHtmlEntities(str: string): string {
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
     .replace(/&#(\d+);/g, (_m, code) => String.fromCharCode(parseInt(code, 10)))
-    .replace(/<[^>]+>/g, ' ')
+    .replace(/<[^>]+>/g, '')
     .replace(/\s+/g, ' ')
     .trim();
 }
 
-function parseYouTubeTimedTextXml(xml: string): CaptionCue[] {
+export function parseYouTubeTimedTextXml(xml: string): CaptionCue[] {
   const cues: CaptionCue[] = [];
 
   // Format 3: <p t="1234" d="5678">text</p>
@@ -108,7 +108,7 @@ function parseYouTubeTimedTextXml(xml: string): CaptionCue[] {
   return cues;
 }
 
-function sliceTranscriptExcerpt(cues: CaptionCue[], startSec: number, endSec: number, maxChars = 360): string | undefined {
+export function sliceTranscriptExcerpt(cues: CaptionCue[], startSec: number, endSec: number, maxChars = 360): string | undefined {
   if (cues.length === 0) return undefined;
   const winStart = Math.max(0, startSec - 5);
   const winEnd = Math.max(endSec + 5, startSec + 15);
