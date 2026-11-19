@@ -315,6 +315,10 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
 
   const youtubeVideoId = extractYouTubeId(session.source.pathOrUrl);
   const replayMediaSrc = resolveReplayMediaSrc(session.source);
+  const [customReplaySrc, setCustomReplaySrc] = useState<string | null>(null);
+  const [clipMediaError, setClipMediaError] = useState<boolean>(false);
+  const replayFileInputRef = useRef<HTMLInputElement | null>(null);
+  const activeReplaySrc = customReplaySrc || replayMediaSrc;
   const durationSec = session.source.duration || 3600;
 
   // Re-derive clean queue if the raw session queue was merged into a single video-length block
@@ -1625,11 +1629,46 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
                       allowFullScreen
                       style={{ width: '100%', height: '100%', border: 'none' }}
                     />
+                  ) : clipMediaError ? (
+                    <div style={{ textAlign: 'center', padding: '32px 20px', color: '#94a3b8' }}>
+                      <p style={{ fontSize: '13px', marginBottom: '14px', color: '#cbd5e1' }}>
+                        Local video source requires re-selection (e.g. browser refreshed).
+                      </p>
+                      <button
+                        onClick={() => replayFileInputRef.current?.click()}
+                        style={{
+                          background: 'linear-gradient(135deg, #2563eb, #1d4ed8)',
+                          border: 'none',
+                          color: '#fff',
+                          padding: '8px 18px',
+                          borderRadius: '8px',
+                          fontSize: '13px',
+                          fontWeight: 600,
+                          cursor: 'pointer'
+                        }}
+                      >
+                        📁 Re-select Video File ({session.source.name})
+                      </button>
+                      <input
+                        ref={replayFileInputRef}
+                        type="file"
+                        accept="video/*,.mp4,.webm,.mkv,.mov"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file) {
+                            setCustomReplaySrc(URL.createObjectURL(file));
+                            setClipMediaError(false);
+                          }
+                        }}
+                        style={{ display: 'none' }}
+                      />
+                    </div>
                   ) : (
                     <video
                       ref={clipVideoRef}
-                      src={replayMediaSrc}
+                      src={activeReplaySrc}
                       controls
+                      onError={() => setClipMediaError(true)}
                       onTimeUpdate={() => {
                         if (!clipVideoRef.current || !activeClip) return;
                         const t = clipVideoRef.current.currentTime;

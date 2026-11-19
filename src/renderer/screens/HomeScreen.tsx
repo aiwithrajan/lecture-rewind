@@ -189,7 +189,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
               Select a Lecture Video
             </h2>
             <p style={{ fontSize: '13px', color: '#94a3b8' }}>
-              Select a local MP4, MKV, or WebM video file. Chapter markers (.vtt or .json) are parsed automatically.
+              Select a local MP4, MKV, or WebM video file from your computer or device. Chapter markers (.vtt or .json) are parsed automatically.
             </p>
           </div>
 
@@ -220,7 +220,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
             }}
           >
             <span style={{ fontSize: '20px' }}>📁</span>
-            Choose Local Video File
+            Choose / Upload Video File (.mp4, .webm)
           </button>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px', margin: '4px 0' }}>
