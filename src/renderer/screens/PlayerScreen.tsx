@@ -109,6 +109,7 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
   // Break mode timer
   const [isBreakActive, setIsBreakActive] = useState(false);
   const [breakSecondsLeft, setBreakSecondsLeft] = useState(120);
+  const [scheduledBreakTriggered, setScheduledBreakTriggered] = useState(false);
 
   // Chapters
   const [chapters, setChapters] = useState<ChapterInfo[]>(source.chapters || []);
@@ -823,6 +824,19 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
     const current = chapters.find((ch) => currentTime >= ch.start && currentTime <= ch.end);
     setCurrentChapterTitle(current ? current.title : '');
   }, [currentTime, chapters]);
+
+  // FR-12: Auto-trigger scheduled break recommendation when video reaches typical absence offset
+  useEffect(() => {
+    if (
+      source.scheduledBreakSec &&
+      source.scheduledBreakSec > 0 &&
+      !scheduledBreakTriggered &&
+      currentTime >= source.scheduledBreakSec
+    ) {
+      setScheduledBreakTriggered(true);
+      startBreak();
+    }
+  }, [currentTime, source.scheduledBreakSec, scheduledBreakTriggered, startBreak]);
 
   // Keyboard accessibility (Section 15, PRD Section 6.3)
   useEffect(() => {

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { SessionDocument, VideoSource } from '@shared/types';
 import { QueueBuilder } from '../engine/QueueBuilder';
 
@@ -39,6 +39,50 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
       setLoading(false);
     }
   };
+
+  // FR-12 Session history: When 3 or more sessions of the same source exist,
+  // report typical absence offset and offer to schedule a break there.
+  const sourceInsights = useMemo(() => {
+    const groups: Record<string, { source: VideoSource; sessions: SessionDocument[] }> = {};
+    for (const s of recentSessions) {
+      const key = s.source.pathOrUrl || s.source.name;
+      if (!groups[key]) {
+        groups[key] = { source: s.source, sessions: [] };
+      }
+      groups[key].sessions.push(s);
+    }
+
+    const insights: Array<{
+      source: VideoSource;
+      sessionCount: number;
+      typicalOffsetSec: number;
+    }> = [];
+
+    for (const group of Object.values(groups)) {
+      if (group.sessions.length >= 3) {
+        const absenceTimes: number[] = [];
+        for (const s of group.sessions) {
+          for (const ev of s.events || []) {
+            if (ev.type === 'pause' || ev.type === 'marker') {
+              absenceTimes.push(ev.start);
+            }
+          }
+        }
+
+        if (absenceTimes.length > 0) {
+          absenceTimes.sort((a, b) => a - b);
+          const median = absenceTimes[Math.floor(absenceTimes.length / 2)];
+          insights.push({
+            source: group.source,
+            sessionCount: group.sessions.length,
+            typicalOffsetSec: Math.round(median)
+          });
+        }
+      }
+    }
+
+    return insights;
+  }, [recentSessions]);
 
   const handlePickLocalFile = async () => {
     try {
@@ -285,6 +329,60 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           <h2 style={{ fontSize: '18px', fontWeight: 600, color: '#f8fafc', marginBottom: '14px' }}>
             Recent Sessions
           </h2>
+
+          {/* FR-12: Typical Absence Offset Recommendation */}
+          {sourceInsights.length > 0 && (
+            <div style={{
+              background: 'rgba(56, 189, 248, 0.12)',
+              border: '1px solid #0284c7',
+              borderRadius: '8px',
+              padding: '12px 14px',
+              marginBottom: '12px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '8px'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span style={{ fontSize: '14px' }}>💡</span>
+                <span style={{ fontSize: '12px', fontWeight: 700, color: '#38bdf8' }}>
+                  Session History Insight (FR-12)
+                </span>
+              </div>
+              {sourceInsights.map((insight, idx) => {
+                const mins = Math.floor(insight.typicalOffsetSec / 60);
+                const secs = insight.typicalOffsetSec % 60;
+                const formatted = `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+                return (
+                  <div key={idx} style={{ fontSize: '12px', color: '#cbd5e1', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+                    <span style={{ flex: 1, minWidth: '220px' }}>
+                      Across {insight.sessionCount} sessions of <strong>{insight.source.name}</strong>, physical absence typically occurred around <strong>{formatted}</strong>.
+                    </span>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onStartSession(
+                          { ...insight.source, scheduledBreakSec: insight.typicalOffsetSec },
+                          simulatedMode
+                        );
+                      }}
+                      style={{
+                        background: '#0284c7',
+                        border: 'none',
+                        color: '#fff',
+                        padding: '6px 12px',
+                        borderRadius: '6px',
+                        fontSize: '11px',
+                        fontWeight: 600,
+                        cursor: 'pointer'
+                      }}
+                    >
+                      ⏱ Schedule Break at {formatted}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
 
           <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '10px' }}>
             {loading ? (

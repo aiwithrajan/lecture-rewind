@@ -293,4 +293,38 @@ describe('Detection Engine & Acceptance Criteria 1, 2, 3', () => {
     // Candidate A must fire at 6.0s via the continuous accumulator
     expect(emittedCandidates).toContain('A');
   });
+
+  it('Debounces double-blink gesture (FR-13) and prevents rapid blink spam', () => {
+    evaluator.reset();
+    const openLm = stagedTraceJson.templates.openUpright as Landmark3D[];
+
+    // 1. Single blink at t=1.0s (rising edge)
+    let ev = evaluator.evaluateFrame({ timestamp: 1.0, confidence: 0.9, blink: true, landmarks: openLm });
+    expect(ev.bookmarks.length).toBe(0);
+
+    // Eyes open at t=1.1s
+    ev = evaluator.evaluateFrame({ timestamp: 1.1, confidence: 0.9, blink: false, landmarks: openLm });
+    expect(ev.bookmarks.length).toBe(0);
+
+    // 2. Micro-jitter blink at t=1.15s (only 50ms later -> ignored, dt < 180ms)
+    ev = evaluator.evaluateFrame({ timestamp: 1.15, confidence: 0.9, blink: true, landmarks: openLm });
+    expect(ev.bookmarks.length).toBe(0);
+
+    // Eyes open at t=1.2s
+    evaluator.evaluateFrame({ timestamp: 1.2, confidence: 0.9, blink: false, landmarks: openLm });
+
+    // 3. Second intentional blink at t=1.5s (dt = 350ms, valid double-blink!)
+    ev = evaluator.evaluateFrame({ timestamp: 1.5, confidence: 0.9, blink: true, landmarks: openLm });
+    expect(ev.bookmarks.length).toBe(1);
+    expect(ev.bookmarks[0].id).toBe('F');
+
+    // Eyes open at t=1.6s
+    evaluator.evaluateFrame({ timestamp: 1.6, confidence: 0.9, blink: false, landmarks: openLm });
+
+    // 4. Another double-blink attempted at t=2.0s & t=2.4s (during 3.5s cooldown -> rejected)
+    evaluator.evaluateFrame({ timestamp: 2.0, confidence: 0.9, blink: true, landmarks: openLm });
+    evaluator.evaluateFrame({ timestamp: 2.1, confidence: 0.9, blink: false, landmarks: openLm });
+    ev = evaluator.evaluateFrame({ timestamp: 2.4, confidence: 0.9, blink: true, landmarks: openLm });
+    expect(ev.bookmarks.length).toBe(0); // Protected by cooldown!
+  });
 });

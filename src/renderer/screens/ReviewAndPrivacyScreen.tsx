@@ -467,7 +467,21 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
   useEffect(() => {
     loadNetworkStats();
     loadAgentStatus();
+    loadConsentStatus();
   }, []);
+
+  const loadConsentStatus = async () => {
+    try {
+      if ((window as any).rewindApi?.consent) {
+        const consent = await (window as any).rewindApi.consent.get();
+        if (consent && typeof consent.telemetryEnabled === 'boolean') {
+          setTelemetryEnabled(consent.telemetryEnabled);
+        }
+      }
+    } catch {
+      // Standalone default
+    }
+  };
 
   useEffect(() => {
     // Auto-run session analysis once when opening a real lecture review
@@ -1440,6 +1454,50 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
                   ))}
                 </div>
               </div>
+
+              {/* 4. Pulse Context Line (FR-15, PRD Section 8.1 & Section 12) */}
+              <div style={{ marginTop: '14px', paddingTop: '12px', borderTop: '1px solid #1e293b' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#94a3b8', marginBottom: '6px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <span style={{ color: '#ec4899' }}>♥</span>
+                    <span style={{ fontWeight: 600, color: '#f472b6' }}>Pulse Context (FR-15)</span>
+                    <span style={{ color: '#64748b' }}>— 12-second rolling average</span>
+                  </div>
+                  <span style={{ color: '#64748b', fontStyle: 'italic' }}>
+                    Informational only. Never used as an absence trigger or medical assessment.
+                  </span>
+                </div>
+
+                {(session.pulse || []).length > 0 ? (
+                  <div style={{ height: '36px', background: '#0b0f19', borderRadius: '4px', position: 'relative', overflow: 'hidden' }}>
+                    <svg style={{ width: '100%', height: '100%', display: 'block' }} viewBox="0 0 1000 36" preserveAspectRatio="none">
+                      <line x1="0" y1="26" x2="1000" y2="26" stroke="#1e293b" strokeDasharray="3,3" />
+                      <line x1="0" y1="10" x2="1000" y2="10" stroke="#1e293b" strokeDasharray="3,3" />
+                      <path
+                        d={(() => {
+                          const pts = session.pulse || [];
+                          return pts.map((p, idx) => {
+                            const x = Math.min(1000, Math.max(0, (p.timestamp / durationSec) * 1000));
+                            const y = Math.min(34, Math.max(4, 34 - ((p.value - 40) / 70) * 30));
+                            return `${idx === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`;
+                          }).join(' ');
+                        })()}
+                        fill="none"
+                        stroke="#ec4899"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                  </div>
+                ) : (
+                  <div style={{ height: '28px', background: '#0b0f19', borderRadius: '4px', display: 'flex', alignItems: 'center', padding: '0 12px' }}>
+                    <span style={{ fontSize: '11px', color: '#64748b' }}>
+                      rPPG pulse sensor was inactive during this session. (Informational context only)
+                    </span>
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* Recovery Clip Player (Opens on 1-click Queue Play or AI Timestamp Click) */}
@@ -1888,7 +1946,22 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
                     <input
                       type="checkbox"
                       checked={telemetryEnabled}
-                      onChange={(e) => setTelemetryEnabled(e.target.checked)}
+                      onChange={async (e) => {
+                        const val = e.target.checked;
+                        setTelemetryEnabled(val);
+                        try {
+                          if ((window as any).rewindApi?.consent) {
+                            const current = await (window as any).rewindApi.consent.get();
+                            await (window as any).rewindApi.consent.set({
+                              granted: current?.granted ?? true,
+                              timestamp: current?.timestamp || new Date().toISOString(),
+                              telemetryEnabled: val
+                            });
+                          }
+                        } catch {
+                          // Standalone fallback
+                        }
+                      }}
                     />
                     <span style={{ fontSize: '13px', color: telemetryEnabled ? '#38bdf8' : '#64748b' }}>
                       {telemetryEnabled ? 'Enabled' : 'Disabled'}

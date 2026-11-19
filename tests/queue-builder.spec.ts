@@ -141,4 +141,24 @@ describe('QueueBuilder & Acceptance Criteria 4, 5', () => {
     // Base interval [250, 265], pre-roll: 240, snapped to 15s grid
     expect(queue[0].duration).toBeGreaterThanOrEqual(15);
   });
+
+  it('Keeps distinct separated missed intervals apart without swallowing active watching stretches', () => {
+    // Two distinct absences: one at 14s (14-26s) and one at 72s (72-84s) in a 134s lecture
+    const events: DetectionEvent[] = [
+      { id: 'ev-1', type: 'marker', start: 14.0, end: 26.0, evidence: ['A'], confidence: 0.95 },
+      { id: 'ev-2', type: 'marker', start: 72.0, end: 84.0, evidence: ['A'], confidence: 0.95 }
+    ];
+
+    const queue = QueueBuilder.buildRewindQueue(events, [], [], 134);
+
+    // Must NOT merge into the whole 134-second video!
+    expect(queue.length).toBe(2);
+    expect(queue[0].start).toBe(0);
+    expect(queue[0].end).toBe(30);
+    expect(queue[1].start).toBe(60);
+    expect(queue[1].end).toBe(90);
+
+    const totalSec = QueueBuilder.calculateTotalDuration(queue);
+    expect(totalSec).toBe(60); // 60s total rewatch instead of 134s!
+  });
 });

@@ -105,6 +105,7 @@ export interface VideoSource {
   duration: number; // In seconds
   name: string;
   chapters?: ChapterInfo[];
+  scheduledBreakSec?: number; // FR-12: Typical absence offset suggested break point
 }
 
 // 13. State Machine States (PRD Section 8.6)
