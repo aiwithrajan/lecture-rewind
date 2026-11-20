@@ -14,8 +14,10 @@ canonical_url: https://github.com/aiwithrajan/lecture-rewind
 
 **Lecture Rewind** is an open-source, consent-first lecture recovery engine designed for students and self-directed learners. 
 
-- 🌐 **Live Web Demo**: [https://presage-bice.vercel.app](https://presage-bice.vercel.app)
+- 🌐 **Live Web App**: [https://presage-bice.vercel.app](https://presage-bice.vercel.app)
 - 💻 **GitHub Repository**: [https://github.com/aiwithrajan/lecture-rewind](https://github.com/aiwithrajan/lecture-rewind) 
+
+![Lecture Rewind Dashboard](https://raw.githubusercontent.com/aiwithrajan/lecture-rewind/main/assets/cover.png)
 
 When studying complex video lectures (whether a 2-hour university course, code architecture briefing, or technical symposium), learners inevitably experience brief physical lapses — looking down at notes, walking away to grab water, or closing their eyes during long explanations. 
 
@@ -46,6 +48,8 @@ Upon concluding a study session, the app compiles these moments into an **intera
 ---
 
 ## 🛠️ How SmartSpectra SDK Is Integrated
+
+![Real-time 478-pt Mesh & EAR Tracking HUD](https://raw.githubusercontent.com/aiwithrajan/lecture-rewind/main/assets/player-hud.png)
 
 Lecture Rewind integrates the **SmartSpectra SDK** (`@smartspectra/node-sdk` / on-device vision pipeline) to extract non-invasive physiological and facial metrics directly from the local webcam stream:
 
@@ -102,10 +106,12 @@ npm run dev
 ```
 
 ### Testing Without a Webcam (Simulated Mode)
-1. On the Home Screen, toggle **"Simulated Mode"** in the top header.
-2. Click **"▶ Start with relay-demo.mp4"** or select any local `.mp4` file.
-3. Observe the automated 20-second calibration and guided self-test.
+1. On the Home Screen, toggle **"Simulated Mode"** at the bottom or in settings.
+2. Click **"▶ Start with Demo Video"** (or choose any local `.mp4` file / paste a YouTube URL).
+3. Choose **"⚡ Consent & Quick Calibrate (5s)"** or **"🚀 Instant Start"**.
 4. Experience real-time absence detection, auto-pause overlays, and the compiled rewind queue on the Review Screen.
+
+![Interactive Rewind Queue & Sequential Replay](https://raw.githubusercontent.com/aiwithrajan/lecture-rewind/main/assets/review-screen.png)
 
 ---
 
