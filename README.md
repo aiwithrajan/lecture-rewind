@@ -1,12 +1,35 @@
 # Lecture Rewind
 
-A consent-first lecture recovery engine built with **Electron, React 18, and TypeScript** that tracks physical presence via local webcam signals and compiles missed intervals into a structured, chapter-snapped recovery queue.
+A consent-first lecture recovery engine powered by the **Presage SmartSpectra SDK**, **Electron**, **React 18**, and **TypeScript** that tracks physical presence via local camera signals and compiles missed intervals into a structured, chapter-snapped recovery queue.
 
 - 🌐 **Live Web Demo**: [https://presage-bice.vercel.app](https://presage-bice.vercel.app)
 - 💻 **Public GitHub**: [https://github.com/aiwithrajan/lecture-rewind](https://github.com/aiwithrajan/lecture-rewind)
+- 🎥 **Video Walkthrough**: [https://youtu.be/DL14YK4us90](https://youtu.be/DL14YK4us90)
 
 > **Design Axiom: Presence, never comprehension.**  
 > Lecture Rewind strictly measures mechanical physical presence (whether a face is in frame and eyes are open). It never makes medical claims, emotional inferences, or focus/comprehension judgments.
+
+---
+
+## 🧠 What Presage SmartSpectra Powers
+
+Lecture Rewind is architected directly on the **Presage SmartSpectra SDK** (`@smartspectra/node-sdk`):
+
+1. **Optical Validation & Physical Presence (`ValidationCode`)**:
+   SmartSpectra continuously validates incoming camera frames against strict physical optical criteria: `kOk`, `kNoFaceFound`, `kFaceNotCentered`, `kFaceNotForward`, `kTooDark`, and `kExcessiveMotion`. These validation codes drive our real-time state machine: when SmartSpectra reports `kNoFaceFound` or `kFaceNotForward` for longer than 4.0 seconds, Lecture Rewind immediately flags an absence interval and auto-pauses the video.
+
+2. **Cardiovascular Pulse Rate Stream (`cardioMetrics / PULSE_RATE`)**:
+   SmartSpectra measures remote photoplethysmography (rPPG) pulse vitals directly from subtle facial color changes. We aggregate this pulse stream into a 12-second rolling average, rendering a physiological context timeline in the post-session review.
+
+3. **Facial Landmarks & Adaptive Eye Aperture (`faceMetrics / FACE_LANDMARKS & BLINKING`)**:
+   SmartSpectra's facial signal stream powers our adaptive eye aperture tracking. Using 3D landmark coordinates, the engine computes real-time Eye Aspect Ratio (EAR) across both ocular polygons. When eye closure persists beyond 6.0 seconds, the engine pauses video playback.
+
+4. **Hands-Free Intentional Gesture Bookmarking**:
+   SmartSpectra's high-frequency blink stream allows us to differentiate natural involuntary blinks ($< 350\text{ ms}$) from deliberate double-blinks ($2$ rapid blinks within $800\text{ ms}$). When a student double-blinks intentionally, the app drops a bookmark without requiring their hands to leave their handwritten notes or keyboard.
+
+5. **Dual-Engine Architecture (Native C-FFI + Zero-Install Web)**:
+   - **Native Desktop App**: Runs `@smartspectra/node-sdk` with precompiled C-ABI runtime libraries loaded via `koffi` FFI and IPC bridges (`@smartspectra/node-sdk/main`, `@smartspectra/node-sdk/preload`, `@smartspectra/node-sdk/renderer`).
+   - **Web Application**: For judges and users evaluating the platform in standard browsers without native FFI dependencies, we created an isomorphic provider that follows the identical SmartSpectra contract via client-side WebAssembly.
 
 ---
 
@@ -64,7 +87,7 @@ npm run dev
 
 ## 🛠️ Complete Functional Requirements (FR-1 to FR-18)
 
-- **FR-1**: Euclidean Eye Aspect Ratio (EAR) & 3D head pose extraction (MediaPipe FaceMesh WASM + SmartSpectra SDK fallback).
+- **FR-1**: Presage SmartSpectra SDK Human-Sensing Vision Pipeline (`@smartspectra/node-sdk`): C-ABI FFI bindings for real-time optical presence validation (`ValidationCode`), cardiovascular pulse rate (`cardioMetrics`), high-speed blink stream (`faceMetrics`), and 3D eye aperture tracking (with isomorphic browser WebAssembly provider for zero-install web evaluation).
 - **FR-2**: Guided self-test calibration (neutral hold + prompted closure + latency estimation).
 - **FR-3**: Corroborating evidence evaluator (Rules A, B, C, D, E, F).
 - **FR-4**: 6-state corroborate state machine (`Watching`, `Suspect`, `Absent`, `Waiting`, `Returned`, `Degraded`).
