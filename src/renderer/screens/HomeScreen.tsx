@@ -622,7 +622,12 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                       type: 'url',
                       pathOrUrl: 'https://www.youtube.com/watch?v=DL14YK4us90',
                       duration: 115,
-                      name: 'Presage Challenge Demo (YouTube)'
+                      name: 'Presage Challenge Demo (YouTube)',
+                      chapters: [
+                        { start: 0, end: 35, title: 'Introduction & Mission' },
+                        { start: 35, end: 75, title: 'Face Mesh & Signal Tracking' },
+                        { start: 75, end: 115, title: 'Rewind Queue & Privacy' }
+                      ]
                     },
                     simulatedMode
                   );

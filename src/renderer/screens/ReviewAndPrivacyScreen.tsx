@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
   AgentChatMessage,
   AgentEngineMode,
@@ -310,7 +310,9 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
   const [isPlayingSequence, setIsPlayingSequence] = useState<boolean>(false);
   const [reviewedIds, setReviewedIds] = useState<string[]>([]);
   const [clipCurrentTime, setClipCurrentTime] = useState<number>(0);
+  const [isClipCompleted, setIsClipCompleted] = useState<boolean>(false);
   const clipVideoRef = useRef<HTMLVideoElement | null>(null);
+  const ytClipIframeRef = useRef<HTMLIFrameElement | null>(null);
   const clipPlayerBoxRef = useRef<HTMLDivElement | null>(null);
 
   const youtubeVideoId = extractYouTubeId(session.source.pathOrUrl);
@@ -320,6 +322,13 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
   const replayFileInputRef = useRef<HTMLInputElement | null>(null);
   const activeReplaySrc = customReplaySrc || replayMediaSrc;
   const durationSec = session.source.duration || 3600;
+
+  // Send control commands to embedded YouTube clip iframe
+  const sendYouTubeClipCommand = useCallback((func: string, args: any[] = []) => {
+    const win = ytClipIframeRef.current?.contentWindow;
+    if (!win) return;
+    win.postMessage(JSON.stringify({ event: 'command', func, args }), '*');
+  }, []);
 
   // Re-derive clean queue if the raw session queue was merged into a single video-length block
   // by legacy double-blink chatter, guaranteeing the user only replays actual missed segments!
@@ -381,6 +390,7 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
   };
 
   const openQueueClip = (item: QueueInterval, idx: number, sequential = false) => {
+    setIsClipCompleted(false);
     setIsPlayingSequence(sequential);
     setActiveClip({
       id: item.id,
@@ -404,6 +414,7 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
   const handleTimestampChipClick = (sec: number) => {
     const startSec = Math.max(0, sec - 5);
     const endSec = Math.min(durationSec, sec + 25);
+    setIsClipCompleted(false);
     setIsPlayingSequence(false);
     setActiveClip({
       id: `jump-${sec}-${Date.now()}`,
@@ -417,18 +428,21 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
     }, 60);
   };
 
-  const handleClipEnded = () => {
+  const handleClipEnded = useCallback(() => {
     if (!activeClip) return;
+    setIsClipCompleted(true);
     if (activeClip.queueIndex !== undefined) {
       markClipReviewed(activeClip.id);
       if (isPlayingSequence && activeClip.queueIndex + 1 < queueList.length) {
         const nextIdx = activeClip.queueIndex + 1;
-        openQueueClip(queueList[nextIdx], nextIdx, true);
+        setTimeout(() => {
+          openQueueClip(queueList[nextIdx], nextIdx, true);
+        }, 1200);
         return;
       }
     }
     setIsPlayingSequence(false);
-  };
+  }, [activeClip, isPlayingSequence, queueList]);
 
   // Seek and auto-play HTML5 local video whenever activeClip changes
   useEffect(() => {
@@ -446,28 +460,70 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
     }
   }, [activeClip, youtubeVideoId]);
 
-  // Detect YouTube clip finish (playerState === 0) to mark reviewed & advance in sequential mode
+  // Strict YouTube clip boundary enforcement via postMessage & interval watchdog
   useEffect(() => {
     if (!activeClip || !youtubeVideoId) return;
+    let isTerminated = false;
+
     const onMsg = (ev: MessageEvent) => {
       if (typeof ev.data !== 'string') return;
       try {
         const msg = JSON.parse(ev.data);
         if (msg.event === 'infoDelivery' && msg.info) {
-          if (typeof msg.info.currentTime === 'number') {
-            setClipCurrentTime(msg.info.currentTime);
+          if (typeof msg.info.currentTime === 'number' && Number.isFinite(msg.info.currentTime)) {
+            const t = msg.info.currentTime;
+            setClipCurrentTime(t);
+
+            // Hard boundary: pause YouTube immediately when clip end boundary is reached
+            if (!isTerminated && t >= activeClip.end - 0.4) {
+              isTerminated = true;
+              sendYouTubeClipCommand('pauseVideo');
+              handleClipEnded();
+            }
           }
-          if (msg.info.playerState === 0) {
-            handleClipEnded();
+
+          // YouTube player state events
+          if (!isTerminated) {
+            // State 0 = ENDED, State 2 = PAUSED (YouTube auto-pauses when reaching &end=)
+            if (msg.info.playerState === 0) {
+              isTerminated = true;
+              sendYouTubeClipCommand('pauseVideo');
+              handleClipEnded();
+            } else if (msg.info.playerState === 2 && clipCurrentTime >= activeClip.end - 1.2) {
+              isTerminated = true;
+              sendYouTubeClipCommand('pauseVideo');
+              handleClipEnded();
+            }
           }
         }
       } catch {
         // Ignore non-JSON messages
       }
     };
+
     window.addEventListener('message', onMsg);
-    return () => window.removeEventListener('message', onMsg);
-  }, [activeClip, youtubeVideoId, isPlayingSequence]);
+
+    // Watchdog fallback: poll YouTube time and stop playback when clip duration is reached
+    const clipDuration = Math.max(1, activeClip.end - activeClip.start);
+    const wallStart = Date.now();
+    const watchdog = setInterval(() => {
+      if (isTerminated) return;
+      sendYouTubeClipCommand('getCurrentTime');
+
+      const elapsedWall = (Date.now() - wallStart) / 1000;
+      if (elapsedWall >= clipDuration + 1.2) {
+        isTerminated = true;
+        sendYouTubeClipCommand('pauseVideo');
+        handleClipEnded();
+      }
+    }, 400);
+
+    return () => {
+      isTerminated = true;
+      clearInterval(watchdog);
+      window.removeEventListener('message', onMsg);
+    };
+  }, [activeClip, youtubeVideoId, clipCurrentTime, sendYouTubeClipCommand, handleClipEnded]);
 
   useEffect(() => {
     loadNetworkStats();
@@ -1510,42 +1566,60 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
                   boxShadow: '0 10px 32px rgba(0, 0, 0, 0.45)'
                 }}
               >
+                {/* Recovery Clip Header & Controls */}
                 <div style={{
-                  background: '#0b0f19',
-                  borderBottom: '1px solid #1e293b',
-                  padding: '12px 20px',
+                  background: 'linear-gradient(90deg, rgba(30, 58, 138, 0.4), rgba(15, 23, 42, 0.95))',
+                  borderBottom: '1px solid rgba(56, 189, 248, 0.25)',
+                  padding: '14px 20px',
                   display: 'flex',
                   justifyContent: 'space-between',
                   alignItems: 'center',
                   flexWrap: 'wrap',
-                  gap: '10px'
+                  gap: '12px'
                 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
                     <span style={{
-                      background: 'rgba(56, 189, 248, 0.2)',
-                      color: '#38bdf8',
+                      background: 'linear-gradient(135deg, #0284c7, #2563eb)',
+                      color: '#fff',
                       fontSize: '11px',
                       fontWeight: 700,
-                      padding: '2px 8px',
+                      padding: '3px 10px',
                       borderRadius: '6px',
+                      letterSpacing: '0.04em',
                       fontFamily: 'var(--font-mono)'
                     }}>
-                      {isPlayingSequence ? 'SEQUENTIAL REWIND' : 'RECOVERY CLIP'}
+                      {isPlayingSequence ? 'SEQUENTIAL REWIND' : 'ISOLATED CLIP'}
                     </span>
-                    <span style={{ fontSize: '14px', fontWeight: 600, color: '#f8fafc' }}>
+                    <span style={{ fontSize: '15px', fontWeight: 600, color: '#f8fafc' }}>
                       {activeClip.title}
                     </span>
-                    <span style={{ fontSize: '12px', color: '#94a3b8', fontFamily: 'var(--font-mono)' }}>
-                      {formatSec(activeClip.start)} → {formatSec(activeClip.end)}
+                    <span style={{
+                      fontSize: '13px',
+                      fontFamily: 'var(--font-mono)',
+                      color: '#38bdf8',
+                      background: 'rgba(56, 189, 248, 0.12)',
+                      padding: '2px 8px',
+                      borderRadius: '6px',
+                      border: '1px solid rgba(56, 189, 248, 0.3)'
+                    }}>
+                      {formatSec(activeClip.start)} ➔ {formatSec(activeClip.end)}
+                    </span>
+                    <span style={{ fontSize: '12px', color: '#94a3b8' }}>
+                      ({Math.round(activeClip.end - activeClip.start)}s segment)
                     </span>
                   </div>
 
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                     <button
                       onClick={() => {
+                        setIsClipCompleted(false);
                         if (clipVideoRef.current && !youtubeVideoId) {
                           clipVideoRef.current.currentTime = activeClip.start;
                           clipVideoRef.current.play().catch(() => {});
+                        } else if (youtubeVideoId) {
+                          sendYouTubeClipCommand('seekTo', [activeClip.start, true]);
+                          sendYouTubeClipCommand('playVideo');
+                          setActiveClip({ ...activeClip });
                         } else {
                           setActiveClip({ ...activeClip });
                         }
@@ -1554,27 +1628,34 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
                         background: '#1e293b',
                         border: '1px solid #334155',
                         color: '#cbd5e1',
-                        padding: '5px 10px',
+                        padding: '6px 12px',
                         borderRadius: '6px',
                         fontSize: '12px',
-                        cursor: 'pointer'
+                        fontWeight: 500,
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '4px'
                       }}
                     >
-                      ↺ Replay
+                      ↺ Replay Clip
                     </button>
 
                     {activeClip.queueIndex !== undefined && activeClip.queueIndex + 1 < queueList.length && (
                       <button
                         onClick={() => openQueueClip(queueList[activeClip.queueIndex! + 1], activeClip.queueIndex! + 1, isPlayingSequence)}
                         style={{
-                          background: '#2563eb',
+                          background: 'linear-gradient(135deg, #2563eb, #0284c7)',
                           border: 'none',
                           color: '#fff',
-                          padding: '5px 12px',
+                          padding: '6px 14px',
                           borderRadius: '6px',
                           fontSize: '12px',
                           fontWeight: 600,
-                          cursor: 'pointer'
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '4px'
                         }}
                       >
                         Next Clip ▶
@@ -1588,9 +1669,10 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
                           background: reviewedIds.includes(activeClip.id) ? 'rgba(16, 185, 129, 0.2)' : '#1e293b',
                           border: `1px solid ${reviewedIds.includes(activeClip.id) ? '#10b981' : '#334155'}`,
                           color: reviewedIds.includes(activeClip.id) ? '#34d399' : '#cbd5e1',
-                          padding: '5px 10px',
+                          padding: '6px 12px',
                           borderRadius: '6px',
                           fontSize: '12px',
+                          fontWeight: 500,
                           cursor: 'pointer'
                         }}
                       >
@@ -1601,13 +1683,14 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
                     <button
                       onClick={() => {
                         setIsPlayingSequence(false);
+                        setIsClipCompleted(false);
                         setActiveClip(null);
                       }}
                       style={{
                         background: 'transparent',
                         border: '1px solid #334155',
                         color: '#94a3b8',
-                        padding: '5px 10px',
+                        padding: '6px 10px',
                         borderRadius: '6px',
                         fontSize: '12px',
                         cursor: 'pointer'
@@ -1618,15 +1701,47 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
                   </div>
                 </div>
 
-                {/* Embedded Recovery Player */}
-                <div style={{ background: '#000', height: '340px', position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                {/* Pre-roll context clarification banner if clip starts from beginning */}
+                {activeClip.start === 0 && (
+                  <div style={{
+                    background: 'rgba(234, 179, 8, 0.08)',
+                    borderBottom: '1px solid rgba(234, 179, 8, 0.2)',
+                    padding: '6px 20px',
+                    fontSize: '12px',
+                    color: '#fbbf24',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px'
+                  }}>
+                    <span>ℹ️</span>
+                    <span>
+                      This clip starts from 0:00 because 10s pre-roll context was automatically included before your first detected absence.
+                      Playback is strictly isolated to <strong>0:00 ➔ {formatSec(activeClip.end)}</strong>.
+                    </span>
+                  </div>
+                )}
+
+                {/* Embedded Recovery Player Viewport */}
+                <div style={{ background: '#000', height: '360px', position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                   {youtubeVideoId ? (
                     <iframe
+                      ref={ytClipIframeRef}
                       key={`${activeClip.id}-${activeClip.start}-${activeClip.end}`}
                       src={`https://www.youtube.com/embed/${youtubeVideoId}?start=${Math.floor(activeClip.start)}&end=${Math.ceil(activeClip.end)}&autoplay=1&enablejsapi=1&rel=0&modestbranding=1`}
                       title={activeClip.title}
                       allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
                       allowFullScreen
+                      onLoad={() => {
+                        const initYt = () => {
+                          const win = ytClipIframeRef.current?.contentWindow;
+                          if (!win) return;
+                          win.postMessage(JSON.stringify({ event: 'listening', id: 'clip-player' }), '*');
+                          win.postMessage(JSON.stringify({ event: 'command', func: 'addEventListener', args: ['onStateChange'] }), '*');
+                        };
+                        initYt();
+                        setTimeout(initYt, 400);
+                        setTimeout(initYt, 1000);
+                      }}
                       style={{ width: '100%', height: '100%', border: 'none' }}
                     />
                   ) : clipMediaError ? (
@@ -1675,30 +1790,172 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
                         setClipCurrentTime(t);
                         if (t >= activeClip.end) {
                           clipVideoRef.current.pause();
+                          setIsClipCompleted(true);
                           handleClipEnded();
                         }
                       }}
                       style={{ width: '100%', height: '100%', objectFit: 'contain' }}
                     />
                   )}
+
+                  {/* Clip Finished Celebration & Auto-advance Overlay */}
+                  {isClipCompleted && (
+                    <div style={{
+                      position: 'absolute',
+                      inset: 0,
+                      background: 'rgba(11, 15, 25, 0.94)',
+                      backdropFilter: 'blur(8px)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      zIndex: 25,
+                      padding: '24px',
+                      textAlign: 'center'
+                    }}>
+                      <div style={{
+                        width: '54px',
+                        height: '54px',
+                        borderRadius: '50%',
+                        background: 'rgba(16, 185, 129, 0.15)',
+                        border: '2px solid #10b981',
+                        color: '#10b981',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontSize: '28px',
+                        marginBottom: '14px',
+                        boxShadow: '0 0 24px rgba(16, 185, 129, 0.35)'
+                      }}>
+                        ✓
+                      </div>
+
+                      <h3 style={{ fontSize: '18px', fontWeight: 700, color: '#f8fafc', marginBottom: '6px' }}>
+                        Missed Segment Replay Completed
+                      </h3>
+
+                      <p style={{ fontSize: '13px', color: '#94a3b8', maxWidth: '420px', marginBottom: '18px', lineHeight: 1.5 }}>
+                        You have recovered the segment from <span style={{ color: '#38bdf8', fontWeight: 600 }}>{formatSec(activeClip.start)}</span> to <span style={{ color: '#38bdf8', fontWeight: 600 }}>{formatSec(activeClip.end)}</span> ({Math.round(activeClip.end - activeClip.start)}s).
+                      </p>
+
+                      <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', justifyContent: 'center' }}>
+                        <button
+                          onClick={() => {
+                            setIsClipCompleted(false);
+                            if (youtubeVideoId) {
+                              sendYouTubeClipCommand('seekTo', [activeClip.start, true]);
+                              sendYouTubeClipCommand('playVideo');
+                              setActiveClip({ ...activeClip });
+                            } else if (clipVideoRef.current) {
+                              clipVideoRef.current.currentTime = activeClip.start;
+                              clipVideoRef.current.play().catch(() => {});
+                            }
+                          }}
+                          style={{
+                            background: '#1e293b',
+                            border: '1px solid #334155',
+                            color: '#f8fafc',
+                            padding: '8px 16px',
+                            borderRadius: '8px',
+                            fontSize: '13px',
+                            fontWeight: 600,
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '6px'
+                          }}
+                        >
+                          ↺ Replay Segment
+                        </button>
+
+                        {activeClip.queueIndex !== undefined && activeClip.queueIndex + 1 < queueList.length && (
+                          <button
+                            onClick={() => {
+                              setIsClipCompleted(false);
+                              openQueueClip(queueList[activeClip.queueIndex! + 1], activeClip.queueIndex! + 1, isPlayingSequence);
+                            }}
+                            style={{
+                              background: 'linear-gradient(135deg, #2563eb, #0284c7)',
+                              border: 'none',
+                              color: '#fff',
+                              padding: '8px 18px',
+                              borderRadius: '8px',
+                              fontSize: '13px',
+                              fontWeight: 600,
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '6px',
+                              boxShadow: '0 0 16px rgba(37, 99, 235, 0.4)'
+                            }}
+                          >
+                            Next Clip ({formatSec(queueList[activeClip.queueIndex! + 1].start)}) ▶
+                          </button>
+                        )}
+
+                        <button
+                          onClick={() => {
+                            setIsClipCompleted(false);
+                            setActiveClip(null);
+                          }}
+                          style={{
+                            background: 'rgba(255, 255, 255, 0.08)',
+                            border: '1px solid rgba(255, 255, 255, 0.15)',
+                            color: '#cbd5e1',
+                            padding: '8px 16px',
+                            borderRadius: '8px',
+                            fontSize: '13px',
+                            cursor: 'pointer'
+                          }}
+                        >
+                          Done & Close
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
-                {/* Clip Progress Strip */}
-                <div style={{ padding: '8px 20px', background: '#0b0f19', display: 'flex', alignItems: 'center', gap: '12px' }}>
-                  <span style={{ fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-mono)' }}>
-                    {formatSec(clipCurrentTime)}
-                  </span>
-                  <div style={{ flex: 1, height: '6px', background: '#1e293b', borderRadius: '3px', overflow: 'hidden' }}>
+                {/* Dedicated Clip-Only Progress Bar Strip */}
+                <div style={{
+                  padding: '10px 20px',
+                  background: '#0b0f19',
+                  borderTop: '1px solid #1e293b',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '6px'
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span style={{ fontSize: '11px', color: '#38bdf8', fontWeight: 600 }}>
+                        CLIP REPLAY PROGRESS:
+                      </span>
+                      <span style={{ fontSize: '12px', color: '#f1f5f9', fontFamily: 'var(--font-mono)', fontWeight: 600 }}>
+                        {formatSec(Math.max(0, clipCurrentTime - activeClip.start))} / {formatSec(activeClip.end - activeClip.start)}
+                      </span>
+                      <span style={{ fontSize: '11px', color: '#64748b' }}>
+                        (Video Time: {formatSec(clipCurrentTime)} / {formatSec(activeClip.end)})
+                      </span>
+                    </div>
+                    <span style={{
+                      fontSize: '11px',
+                      fontFamily: 'var(--font-mono)',
+                      color: isClipCompleted ? '#10b981' : '#38bdf8',
+                      fontWeight: 600
+                    }}>
+                      {isClipCompleted
+                        ? '✓ COMPLETED'
+                        : `${Math.round(Math.max(0, Math.min(100, ((clipCurrentTime - activeClip.start) / Math.max(1, activeClip.end - activeClip.start)) * 100)))}%`}
+                    </span>
+                  </div>
+
+                  <div style={{ width: '100%', height: '8px', background: '#1e293b', borderRadius: '4px', overflow: 'hidden' }}>
                     <div style={{
-                      width: `${Math.max(0, Math.min(100, ((clipCurrentTime - activeClip.start) / Math.max(1, activeClip.end - activeClip.start)) * 100))}%`,
+                      width: `${isClipCompleted ? 100 : Math.max(0, Math.min(100, ((clipCurrentTime - activeClip.start) / Math.max(1, activeClip.end - activeClip.start)) * 100))}%`,
                       height: '100%',
-                      background: 'linear-gradient(90deg, #3b82f6, #38bdf8)',
-                      transition: 'width 0.15s linear'
+                      background: isClipCompleted ? '#10b981' : 'linear-gradient(90deg, #3b82f6, #38bdf8)',
+                      transition: 'width 0.2s linear'
                     }} />
                   </div>
-                  <span style={{ fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-mono)' }}>
-                    {formatSec(activeClip.end)}
-                  </span>
                 </div>
               </div>
             )}
@@ -1795,7 +2052,7 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
                             )}
                           </div>
                           <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '4px', marginLeft: '34px' }}>
-                            Range: {formatSec(item.start)} → {formatSec(item.end)} (+10s pre-roll applied)
+                            Range: <strong style={{ color: '#38bdf8' }}>{formatSec(item.start)} ➔ {formatSec(item.end)}</strong> • Duration: {item.duration}s (Includes 10s pre-roll context)
                           </div>
                         </div>
 
@@ -1821,17 +2078,18 @@ export const ReviewAndPrivacyScreen: React.FC<ReviewAndPrivacyScreenProps> = ({
                           <button
                             onClick={() => openQueueClip(item, idx, false)}
                             style={{
-                              background: isCurrentlyPlaying ? '#0284c7' : '#3b82f6',
+                              background: isCurrentlyPlaying ? 'linear-gradient(135deg, #0284c7, #0369a1)' : 'linear-gradient(135deg, #2563eb, #1d4ed8)',
                               color: '#fff',
                               border: 'none',
                               padding: '6px 14px',
                               borderRadius: '6px',
                               cursor: 'pointer',
                               fontSize: '12px',
-                              fontWeight: 600
+                              fontWeight: 600,
+                              boxShadow: isCurrentlyPlaying ? '0 0 12px rgba(56, 189, 248, 0.4)' : 'none'
                             }}
                           >
-                            {isCurrentlyPlaying ? 'Playing...' : 'Play Clip ▶'}
+                            {isCurrentlyPlaying ? '● Playing Clip' : 'Play Clip ▶'}
                           </button>
                         </div>
                       </div>
