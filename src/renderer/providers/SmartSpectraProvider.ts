@@ -172,7 +172,11 @@ export class SmartSpectraProvider implements SignalProvider {
     }
 
     if (this.hiddenVideo) {
+      this.hiddenVideo.pause();
       this.hiddenVideo.srcObject = null;
+      if (this.hiddenVideo.parentNode) {
+        this.hiddenVideo.parentNode.removeChild(this.hiddenVideo);
+      }
       this.hiddenVideo = null;
     }
   }
@@ -198,7 +202,19 @@ export class SmartSpectraProvider implements SignalProvider {
     videoEl.srcObject = stream;
     videoEl.muted = true;
     videoEl.playsInline = true;
-    await videoEl.play();
+    videoEl.setAttribute('playsinline', 'true');
+    // Ensure video is in DOM so Safari WebKit does not throttle frame decoding
+    videoEl.style.position = 'fixed';
+    videoEl.style.top = '-9999px';
+    videoEl.style.left = '-9999px';
+    videoEl.style.width = '320px';
+    videoEl.style.height = '240px';
+    videoEl.style.opacity = '0';
+    videoEl.style.pointerEvents = 'none';
+    if (typeof document !== 'undefined' && document.body) {
+      document.body.appendChild(videoEl);
+    }
+    await videoEl.play().catch(() => {});
     this.hiddenVideo = videoEl;
 
     const FaceMeshCtor = (window as any).FaceMesh;
@@ -207,7 +223,7 @@ export class SmartSpectraProvider implements SignalProvider {
     }
 
     this.faceMesh = new FaceMeshCtor({
-      locateFile: (file: string) => `./mediapipe/face_mesh/${file}`
+      locateFile: (file: string) => `/mediapipe/face_mesh/${file}`
     });
 
     this.faceMesh.setOptions({
@@ -273,13 +289,18 @@ export class SmartSpectraProvider implements SignalProvider {
       if (!this.isRunning || !this.hiddenVideo || !this.faceMesh) return;
 
       // Cap processing to ~20-25 FPS for responsive tracking and low laptop CPU load
-      if (!this.isProcessingFrame && nowMs - this.lastSendMs >= 40 && this.hiddenVideo.readyState >= 2) {
+      if (
+        !this.isProcessingFrame &&
+        nowMs - this.lastSendMs >= 40 &&
+        this.hiddenVideo.readyState >= 2 &&
+        this.hiddenVideo.videoWidth > 0
+      ) {
         this.isProcessingFrame = true;
         this.lastSendMs = nowMs;
         try {
           await this.faceMesh.send({ image: this.hiddenVideo });
-        } catch {
-          // Skip transient frame drop
+        } catch (err) {
+          console.warn('[FaceMesh] send frame warning:', err);
         } finally {
           this.isProcessingFrame = false;
         }

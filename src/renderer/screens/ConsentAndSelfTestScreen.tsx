@@ -542,16 +542,22 @@ export const ConsentAndSelfTestScreen: React.FC<ConsentAndSelfTestScreenProps> =
             <button
               onClick={finalizeSelfTest}
               style={{
-                padding: '12px',
-                background: 'transparent',
-                border: '1px solid #2e3c54',
-                color: '#94a3b8',
+                padding: '12px 18px',
+                background: 'rgba(56, 189, 248, 0.12)',
+                border: '1px solid rgba(56, 189, 248, 0.35)',
+                color: '#38bdf8',
                 borderRadius: '8px',
                 cursor: 'pointer',
-                fontSize: '13px'
+                fontSize: '13px',
+                fontWeight: 600,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '8px',
+                marginTop: '12px'
               }}
             >
-              Skip Test & Use Default Baseline
+              <span>⚡</span> Skip Test & Use Standard Baseline
             </button>
           </div>
         </div>
