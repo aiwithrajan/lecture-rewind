@@ -81,13 +81,15 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
   onFinishSession,
   onExit
 }) => {
-  const youtubeVideoId = extractYouTubeVideoId(source.pathOrUrl);
-  const mediaSrc = resolvePlayableMediaSrc(source);
+  const [activeSource, setActiveSource] = useState<VideoSource>(source);
+  const inPlayerFileInputRef = useRef<HTMLInputElement | null>(null);
+  const youtubeVideoId = extractYouTubeVideoId(activeSource.pathOrUrl);
+  const mediaSrc = resolvePlayableMediaSrc(activeSource);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const ytIframeRef = useRef<HTMLIFrameElement | null>(null);
   const [isPlaying, setIsPlaying] = useState(Boolean(youtubeVideoId));
   const [currentTime, setCurrentTime] = useState(0);
-  const [duration, setDuration] = useState(source.duration || 3600);
+  const [duration, setDuration] = useState(activeSource.duration || 3600);
   const [playbackRate, setPlaybackRate] = useState(1.0);
   const [videoError, setVideoError] = useState<string | null>(null);
   const currentTimeRef = useRef<number>(0);
@@ -1045,7 +1047,7 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
           <iframe
             ref={ytIframeRef}
             src={`https://www.youtube.com/embed/${youtubeVideoId}?enablejsapi=1&autoplay=1&rel=0&modestbranding=1`}
-            title={source.name}
+            title={activeSource.name}
             allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
             allowFullScreen
             onLoad={() => {
@@ -1087,7 +1089,7 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
               }
             }}
             onError={() => {
-              setVideoError('Could not load this video source. Choose a local MP4/MKV/WebM file or paste a YouTube or direct .mp4 URL.');
+              setVideoError('Could not load this video source. Choose a local MP4/MKV/WebM file or play the YouTube demo video.');
             }}
             onEnded={finishSession}
             style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }}
@@ -1100,15 +1102,80 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
             top: '24px',
             left: '50%',
             transform: 'translateX(-50%)',
-            background: 'rgba(127, 29, 29, 0.92)',
+            background: 'rgba(127, 29, 29, 0.95)',
             border: '1px solid #ef4444',
             color: '#fecaca',
-            padding: '10px 16px',
-            borderRadius: '8px',
+            padding: '16px 24px',
+            borderRadius: '10px',
             fontSize: '13px',
-            zIndex: 18
+            zIndex: 18,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            gap: '12px',
+            boxShadow: '0 8px 30px rgba(0,0,0,0.6)'
           }}>
-            {videoError}
+            <div>{videoError}</div>
+            <div style={{ display: 'flex', gap: '10px' }}>
+              <button
+                type="button"
+                onClick={() => {
+                  setVideoError(null);
+                  setActiveSource({
+                    type: 'url',
+                    pathOrUrl: 'https://www.youtube.com/watch?v=DL14YK4us90',
+                    duration: 115,
+                    name: 'Presage Challenge Demo (YouTube)'
+                  });
+                }}
+                style={{
+                  background: '#ef4444',
+                  border: 'none',
+                  color: '#fff',
+                  borderRadius: '6px',
+                  padding: '8px 16px',
+                  fontSize: '13px',
+                  fontWeight: 600,
+                  cursor: 'pointer'
+                }}
+              >
+                ▶ Play YouTube Demo Video
+              </button>
+              <button
+                type="button"
+                onClick={() => inPlayerFileInputRef.current?.click()}
+                style={{
+                  background: 'rgba(255,255,255,0.15)',
+                  border: '1px solid rgba(255,255,255,0.3)',
+                  color: '#fff',
+                  borderRadius: '6px',
+                  padding: '8px 16px',
+                  fontSize: '13px',
+                  fontWeight: 600,
+                  cursor: 'pointer'
+                }}
+              >
+                📁 Choose Local File
+              </button>
+            </div>
+            <input
+              ref={inPlayerFileInputRef}
+              type="file"
+              accept="video/*,.mp4,.mkv,.webm,.mov"
+              style={{ display: 'none' }}
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) {
+                  setVideoError(null);
+                  setActiveSource({
+                    type: 'local',
+                    pathOrUrl: URL.createObjectURL(file),
+                    duration: 3600,
+                    name: file.name
+                  });
+                }
+              }}
+            />
           </div>
         )}
 
