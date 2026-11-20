@@ -43,9 +43,19 @@ export const ConsentAndSelfTestScreen: React.FC<ConsentAndSelfTestScreenProps> =
 
   // Provider, timer, handoff, and video preview
   const videoPreviewRef = useRef<HTMLVideoElement | null>(null);
+  const [activeMediaStream, setActiveMediaStream] = useState<MediaStream | null>(null);
   const providerRef = useRef<SignalProvider | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const handedOffRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    if (videoPreviewRef.current && activeMediaStream) {
+      if (videoPreviewRef.current.srcObject !== activeMediaStream) {
+        videoPreviewRef.current.srcObject = activeMediaStream;
+      }
+      videoPreviewRef.current.play().catch(() => {});
+    }
+  }, [activeMediaStream, step]);
 
   useEffect(() => {
     return () => {
@@ -60,6 +70,47 @@ export const ConsentAndSelfTestScreen: React.FC<ConsentAndSelfTestScreenProps> =
       }
     };
   }, []);
+
+  const handleInstantStart = async () => {
+    try {
+      if ((window as any).rewindApi?.consent) {
+        await (window as any).rewindApi.consent.set({
+          granted: true,
+          timestamp: new Date().toISOString(),
+          telemetryEnabled: telemetryOptIn
+        });
+      }
+    } catch {}
+
+    const openTemplate = stagedTraceJson.templates.openUpright;
+    const closedTemplate = stagedTraceJson.templates.closedUpright;
+    const neutralFrames: SignalFrame[] = Array.from({ length: 15 }, (_, i) => ({
+      timestamp: i * 0.1,
+      landmarks: openTemplate as any,
+      confidence: 0.95
+    }));
+    const closureFrames: SignalFrame[] = Array.from({ length: 10 }, (_, i) => ({
+      timestamp: i * 0.1,
+      landmarks: closedTemplate as any,
+      confidence: 0.95
+    }));
+
+    const result = SelfTestCalibrator.calibrate({
+      neutralFrames,
+      closureFrames,
+      latencyMeasurementsMs: [180, 210, 195],
+      userSensitivity: sensitivity
+    });
+
+    let provider: SignalProvider;
+    if (simulatedMode) {
+      provider = new SimulatedTraceProvider();
+    } else {
+      provider = new SmartSpectraProvider({ telemetryEnabled: telemetryOptIn });
+    }
+    handedOffRef.current = true;
+    onCalibrationComplete(result, provider);
+  };
 
   const handleGrantConsent = async (mode: 'quick' | 'full') => {
     // Record consent via IPC if available
@@ -98,6 +149,7 @@ export const ConsentAndSelfTestScreen: React.FC<ConsentAndSelfTestScreenProps> =
       provider = new SmartSpectraProvider({
         telemetryEnabled: telemetryOptIn,
         onStreamAvailable: (stream) => {
+          setActiveMediaStream(stream);
           if (videoPreviewRef.current) {
             videoPreviewRef.current.srcObject = stream;
             videoPreviewRef.current.play().catch(() => {});
@@ -407,6 +459,28 @@ export const ConsentAndSelfTestScreen: React.FC<ConsentAndSelfTestScreenProps> =
             >
               <span>Consent & Full Self-Test (20s)</span>
               <span style={{ fontSize: '11px', color: '#94a3b8', fontWeight: 400 }}>4-step full accuracy calibration</span>
+            </button>
+
+            <button
+              onClick={handleInstantStart}
+              style={{
+                gridColumn: '1 / -1',
+                padding: '14px',
+                background: 'rgba(56, 189, 248, 0.12)',
+                border: '1px solid rgba(56, 189, 248, 0.4)',
+                borderRadius: '8px',
+                color: '#38bdf8',
+                fontSize: '13px',
+                fontWeight: 600,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '8px',
+                marginTop: '4px'
+              }}
+            >
+              <span>🚀</span> Instant Start (Use Calibrated Baseline & Skip Calibration)
             </button>
           </div>
         </div>
