@@ -12,26 +12,21 @@ canonical_url: https://github.com/aiwithrajan/lecture-rewind
 
 ## What I Built
 
-**Lecture Rewind** is an open-source, consent-first video lecture recovery engine designed for students and self-directed learners. 
+I looked down at my notebook to copy a complex formula. When I glanced back up twenty seconds later, the professor had already wiped the board clean and moved on to the next concept. I spent the next ten minutes scrubbing blindly back and forth through a two-hour recording, trying to guess where the derivation actually began.
+
+Every student and self-directed learner knows this exact frustration. Video lectures are the backbone of modern education, but human presence is naturally interrupted — looking down at notes, stepping away to grab water, or briefly resting your eyes during dense conceptual explanations. Scrubbing manually through hours of video wastes valuable study time and repeatedly interrupts learning flow.
+
+**Lecture Rewind passively watches the lecture with you.**
+
+Using physiological and facial human sensing powered by the **Presage SmartSpectra SDK**, it flags intervals where the viewer was physically away or experienced prolonged eye closure. When the lecture finishes, it automatically compiles those moments into an **interactive, chapter-snapped Rewind Queue**. 
+
+In one click, you replay only the exact intervals you missed — pre-rolled by 10 seconds for narrative continuity — without re-watching the whole lecture.
 
 - 🌐 **Live Web Application**: [https://presage-bice.vercel.app](https://presage-bice.vercel.app)
 - 💻 **Public Code Repository**: [https://github.com/aiwithrajan/lecture-rewind](https://github.com/aiwithrajan/lecture-rewind)
 - 🎥 **Video Walkthrough**: [https://youtu.be/DL14YK4us90](https://youtu.be/DL14YK4us90)
 
 ![Lecture Rewind Dashboard](https://raw.githubusercontent.com/aiwithrajan/lecture-rewind/main/assets/cover.png)
-
-### The Problem
-When studying complex technical video lectures — whether a 2-hour university computer science lecture, systems architecture briefing, or engineering seminar — learners inevitably experience brief physical lapses:
-- Looking down to write handwritten notes
-- Walking away to grab a glass of water or answer the door
-- Closing their eyes during dense conceptual explanations
-
-When they return, they face a frustrating dilemma: *What timestamp was I at? What did I miss? Did the professor switch slides?* Manually scrubbing back and forth wastes hours and disrupts focus.
-
-### The Solution: Lecture Rewind
-**Lecture Rewind passively watches the lecture with you.** Using non-invasive on-device biometric signals powered by the **Presage SmartSpectra SDK** and a 478-point facial mesh, it flags intervals where the viewer was physically absent or experienced prolonged eye closure.
-
-When the lecture ends (or whenever the student chooses to finish), the system compiles these moments into an **interactive, chapter-snapped Rewind Queue**. In a single click, students can replay only the exact intervals they missed — automatically pre-rolled by 10 seconds for narrative continuity — without re-watching the whole lecture.
 
 > 🧭 **Core Design Axiom: Presence, never comprehension.**  
 > Lecture Rewind strictly observes mechanical physical presence (facial pose and eye aperture). It makes **zero** medical diagnosis or treatment claims, **zero** emotional or cognitive inferences, and adheres strictly to consensual, local-first monitoring.
@@ -40,7 +35,7 @@ When the lecture ends (or whenever the student chooses to finish), the system co
 
 ## Demo
 
-Watch the full 2-minute walkthrough showing synchronized on-device facial tracking, real-time EAR waveforms, automatic absence pausing, and chapter-snapped queue compilation:
+Watch the 2-minute walkthrough showing real-time Presage optical validation, eye aperture waveforms, automatic absence pausing, and chapter-snapped queue compilation:
 
 {% youtube DL14YK4us90 %}
 
@@ -49,12 +44,12 @@ Watch the full 2-minute walkthrough showing synchronized on-device facial tracki
 > 📹 **Direct YouTube Link**: [https://youtu.be/DL14YK4us90](https://youtu.be/DL14YK4us90)  
 > 🌐 **Try the Live App Directly in Your Browser**: [https://presage-bice.vercel.app](https://presage-bice.vercel.app)
 
-### Key Moments Demonstrated in the Video:
-1. **Camera Consent & Guided Calibration**: Sensor reliability verdict, individual eye aperture baselining, and 1-click Instant Start.
-2. **Real-Time Tracking HUD**: Live 478-point face mesh, pitch/yaw vectors, scrolling Eye Aspect Ratio (EAR) waveform, and intentional double-blink bookmarking.
-3. **Session Review Screen**: Comprehensive presence breakdown, interactive session timeline with rPPG pulse context, and compiled rewind queue.
-4. **Isolated Missed Clip Player**: 1-click sequential replay strictly bounded to missed intervals with auto-advance and completion overlays.
-5. **Instant AI Session Review Agent**: On-device 0.0s deterministic session analysis in English & Hinglish.
+### What the Demo Highlights:
+1. **Camera Consent & Quick Calibration**: Sensor reliability verification, individual baseline baselining, and 1-click Instant Start.
+2. **Real-Time Human-Sensing HUD**: Live 478-point mesh, pitch/yaw head pose vectors, scrolling Eye Aspect Ratio (EAR) waveform, and intentional double-blink bookmarking.
+3. **Session Review Screen**: Presence breakdown, interactive session timeline with rPPG pulse context, and compiled rewind queue.
+4. **Isolated Missed Clip Player**: 1-click replay strictly bounded to missed intervals with automatic advance and completion overlays.
+5. **Instant Session Review Agent**: On-device 0.0s deterministic session analysis in English & Hinglish.
 
 ---
 
@@ -102,35 +97,33 @@ Judges without an active camera can evaluate 100% of the platform:
 
 ![Real-time 478-pt Mesh & EAR Tracking HUD](https://raw.githubusercontent.com/aiwithrajan/lecture-rewind/main/assets/player-hud.png)
 
-Lecture Rewind integrates the **Presage SmartSpectra SDK** (`@smartspectra/node-sdk` / client-side vision pipeline) to extract non-invasive physiological and facial metrics directly from the local webcam stream at 30 FPS:
+### What Presage SmartSpectra Powers
 
-### 1. 478-Point Facial Mesh & Eye Aspect Ratio (EAR)
-The engine calculates continuous eye aperture using the 3D landmark coordinates of both the left and right eye polygons:
+Lecture Rewind is architected directly around the **Presage SmartSpectra SDK** (`@smartspectra/node-sdk`):
 
-$$\text{EAR} = \frac{\|p_2 - p_6\| + \|p_3 - p_5\|}{2 \|p_1 - p_4\|}$$
+1. **Optical Validation & Physical Presence (`ValidationCode`)**:
+   SmartSpectra continuously validates incoming camera frames against strict physical optical criteria: `kOk`, `kNoFaceFound`, `kFaceNotCentered`, `kFaceNotForward`, `kTooDark`, and `kExcessiveMotion`. These validation codes drive our real-time state machine: when SmartSpectra reports `kNoFaceFound` or `kFaceNotForward` for longer than 4.0 seconds, Lecture Rewind immediately flags an absence interval and auto-pauses the video.
 
-- **Left Eye Indices**: `[33, 160, 158, 133, 153, 144]`
-- **Right Eye Indices**: `[362, 385, 387, 263, 373, 380]`
-- When EAR falls below the calibrated closure threshold ($< 0.22$) for $> 6.0$ seconds (or when facial presence is lost for $> 4.0$ seconds), the session marks a mechanical absence interval and pauses video playback.
+2. **Cardiovascular Pulse Rate Stream (`cardioMetrics / PULSE_RATE`)**:
+   SmartSpectra measures remote photoplethysmography (rPPG) pulse vitals directly from subtle facial color changes. We aggregate this pulse stream into a 12-second rolling average, rendering a physiological context timeline in the post-session review.
 
-### 2. Intentional Gesture Bookmarking (Rule F)
-The engine differentiates natural involuntary blinks ($< 350\text{ ms}$) from deliberate double-blinks ($2$ rapid blinks within $800\text{ ms}$). When a double-blink gesture is detected, the app automatically drops a non-intrusive bookmark at that video timestamp without the student taking their hands off their notes or keyboard.
+3. **Facial Landmarks & Adaptive Eye Aperture (`faceMetrics / FACE_LANDMARKS & BLINKING`)**:
+   SmartSpectra's facial signal stream powers our adaptive eye aperture tracking. Using 3D landmark coordinates, the engine computes real-time Eye Aspect Ratio (EAR) across both ocular polygons. When eye closure persists beyond 6.0 seconds, the engine pauses video playback.
 
-### 3. Head Pose Orientation (Pitch & Yaw Vectors)
-The system calculates relative head orientation relative to the screen plane:
-- **Pitch**: Calculated from the vertical vector between landmark `168` (glabella) and landmark `152` (chin). Head pitch drops below $-20^\circ$ signal a downward head posture.
-- **Yaw**: Horizontal vector between landmark `33` and landmark `263`. Lateral yaw deviations beyond $\pm 28^\circ$ signal looking away from the lecture.
+4. **Hands-Free Intentional Gesture Bookmarking**:
+   SmartSpectra's high-frequency blink stream allows us to differentiate natural involuntary blinks ($< 350\text{ ms}$) from deliberate double-blinks ($2$ rapid blinks within $800\text{ ms}$). When a student double-blinks intentionally, the app drops a bookmark without requiring their hands to leave their handwritten notes or keyboard.
 
-### 4. rPPG Pulse Rate Context Line (FR-15)
-Presage SmartSpectra pulse rate signals are sampled and aggregated into a 12-second rolling average on the review timeline, providing purely informational physiological context alongside missed intervals.
+5. **Dual-Engine Architecture (Native C-FFI + Web Pipeline)**:
+   - **Native Desktop App**: Runs `@smartspectra/node-sdk` with precompiled C-ABI runtime libraries loaded via `koffi` FFI.
+   - **Web Application**: For judges and users evaluating the platform in standard browsers without native FFI dependencies, we created an isomorphic provider that follows the identical SmartSpectra contract via client-side WebAssembly.
 
-### 5. Pure Deterministic Queue Compilation Pipeline
-Upon session completion, the `QueueBuilder` executes a deterministic 5-step pipeline:
-1. **Collect**: Raw pause and marker intervals.
-2. **Exclude Degraded Signals**: Strips intervals where camera confidence was degraded ($< 0.60$).
-3. **Pre-Roll Expansion**: Extends interval starts by 10 seconds ($\text{start}' = \max(0, \text{start} - 10)$) for cognitive continuity.
-4. **Merge Adjacent Intervals**: Coalesces intervals within 30 seconds of each other.
-5. **Boundary Snapping**: Snaps to lecture chapter markers or 15-second grid boundaries.
+6. **Deterministic Rewind Queue Pipeline**:
+   When the session finishes, the `QueueBuilder` runs a 5-step compilation pipeline:
+   - **Collect**: Gathers raw pause and marker intervals.
+   - **Filter Low Confidence**: Strips intervals where camera confidence was degraded ($< 0.60$).
+   - **Pre-Roll Expansion**: Adds 10 seconds to the start of each interval so you never rejoin mid-sentence.
+   - **Merge**: Coalesces adjacent intervals within 30 seconds of each other.
+   - **Chapter Snapping**: Snaps interval boundaries to lecture chapter topics.
 
 ![Interactive Rewind Queue & Sequential Replay](https://raw.githubusercontent.com/aiwithrajan/lecture-rewind/main/assets/review-screen.png)
 
@@ -138,15 +131,15 @@ Upon session completion, the `QueueBuilder` executes a deterministic 5-step pipe
 
 ## Prize Categories
 
-### 1. Best Thoughtful Real-World Use
-- **Real-World Need**: Video lectures are the dominant medium of modern education, but human attention is naturally punctuated by physical distractions (taking notes, doorbells, resting eyes). Students currently spend 20–30% of their total study time scrubbing backwards trying to find where they drifted away.
-- **Usability-First Design**: Lecture Rewind does not require specialized hardware, wearable sensors, or subscription accounts. It works on any laptop with a basic webcam.
-- **Responsible Data Handling**: It is designed with a **Zero-Cloud-Biometrics** philosophy. Video frames are analyzed in local RAM and discarded in real time. Not a single pixel is saved to disk or transmitted over the internet.
+### 1. Best Thoughtful Real-World Use (Primary Category)
+- **A Pain Point Every Student Shares**: Modern online courses (from MIT OpenCourseWare to Coursera and YouTube) provide endless content, but staying locked to a screen for two hours without looking away is biologically unrealistic. Students lose significant study time searching for where they left off.
+- **Frictionless Usability**: Works seamlessly on any standard laptop webcam. No special sensors, smartbands, or account logins are required.
+- **Privacy as a Feature**: Lecture Rewind treats biometrics as strictly ephemeral signals. The user gets all the benefits of human-sensing assistance with none of the privacy risks.
 
 ### 2. Most Creative or Delightful Use
-- **Novel Biometric Superpower**: Turning passive webcam presence into an active lecture recovery assistant. Instead of feeling guilty about physical lapses, students have their back covered by an automated recovery queue.
-- **Hands-Free Gesture Bookmarks**: Deliberate double-blinks let students mark complex lecture moments without touching their keyboard while writing notes.
-- **Chapter-Aware Rewind**: Missed intervals snap intelligently to real lecture syllabus topics (`Introduction`, `Face Mesh & Signal Tracking`, `Rewind Queue & Privacy`), turning raw biometric events into structured study guides.
+- **Passive Camera Turned Active Study Partner**: Transforming webcam video from a passive recording tool into an automated lecture recovery system.
+- **Hands-Free Double-Blink Bookmarking**: Marking key lecture insights without lifting a pen or taking your hands off the keyboard.
+- **Chapter-Aware Rewind Queues**: Automatically organizing missed intervals under real syllabus headings (`Introduction`, `Face Mesh & Signal Tracking`, `Rewind Queue & Privacy`), giving students an instant structured recovery playlist.
 
 ---
 
@@ -154,14 +147,12 @@ Upon session completion, the `QueueBuilder` executes a deterministic 5-step pipe
 
 Privacy and explicit user consent are foundational requirements of Lecture Rewind:
 
-- **Explicit Informed Consent**: Before any camera stream is activated, users must review and approve a dedicated consent screen detailing exactly which signals are extracted. Consent is never assumed or hidden.
-- **Strictly Local Processing**: All computer vision inference and SmartSpectra SDK signals run **100% on-device** via client-side WebAssembly. 
-- **Zero Raw Video Storage**: No webcam frames or video recordings are ever written to disk, stored in memory buffers beyond the immediate frame, or transmitted across a network.
-- **Outbound Network Firewall (AC-8)**: Electron's session request interceptor blocks all external network requests. The in-app Network Guard displays a real-time counter verifying **0 outbound requests**.
-- **1-Click Irreversible Data Wipe (AC-7)**: A dedicated *Privacy & Firewall* panel enables users to permanently purge session metadata, timestamps, and calibration profiles with one click.
-- **SDK Telemetry**: Optional SDK diagnostic telemetry (FR-18) is **disabled by default** and only activated with explicit checkbox consent.
-- **AI Agent Privacy**: The built-in AI Session Review Agent uses a deterministic **Instant Offline Engine (0.0s)** by default. If optional Gemini AI is selected, only non-biometric numerical timestamps and course titles are sent; zero biometric or visual data is ever exposed.
-- **Section 12 PRD Compliance**: The system vocabulary is strictly mechanical (*"prolonged eye closure"*, *"physical absence"*, *"intervals where viewer was not present"*). Prohibited subjective and medical terms (*"sleep"*, *"drowsiness"*, *"fatigue"*, *"stress"*, *"focus"*, *"attention"*) are strictly excluded.
+- **Zero Raw Video Recording or Streaming**: Video frames are processed entirely in volatile memory on the local machine and discarded immediately after extracting geometric coordinates and vital signals. No video files or raw frames are ever saved to disk or transmitted to any server.
+- **Explicit Informed Consent**: Before any camera stream is activated, users must review and grant camera permission. We provide full transparency into every signal tracked.
+- **Configurable Network Boundary**: The desktop application isolates video playback and biometric processing. SDK diagnostic telemetry is disabled by default and requires explicit user opt-in.
+- **1-Click Irreversible Data Wipe**: All local session documents, timestamps, and baselines stored in local storage can be permanently wiped with a single click in the Privacy & Firewall panel.
+- **AI Agent Privacy**: The built-in AI Session Review Agent uses a deterministic offline engine by default. If optional cloud AI is enabled, only non-biometric numerical timestamps and course titles are sent; zero biometric or visual data is ever exposed.
+- **Strictly Non-Diagnostic Language Policy**: The system vocabulary is strictly mechanical (*"prolonged eye closure"*, *"physical absence"*, *"intervals where viewer was not present"*). Prohibited subjective and medical terms (*"sleep"*, *"drowsiness"*, *"fatigue"*, *"stress"*, *"focus"*, *"attention"*) are strictly excluded.
 
 ---
 
