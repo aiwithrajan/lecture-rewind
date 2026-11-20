@@ -107,11 +107,6 @@ if (typeof window !== 'undefined' && !(window as any).rewindApi) {
         return [];
       }
     },
-    dialog: {
-      openVideoFile: async (): Promise<string | null> => {
-        return null;
-      }
-    },
     agent: {
       getStatus: async (): Promise<AgentStatus> => {
         return {

@@ -48,8 +48,13 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   }, [recentSessions]);
 
   const handlePickLocalFile = async () => {
-    try {
-      if ((window as any).rewindApi?.dialog) {
+    const isElectron =
+      typeof navigator !== 'undefined' &&
+      /electron/i.test(navigator.userAgent) &&
+      Boolean((window as any).rewindApi?.dialog?.openVideoFile);
+
+    if (isElectron) {
+      try {
         const filePath = await (window as any).rewindApi.dialog.openVideoFile();
         if (filePath) {
           const fileName = filePath.split(/[/\\]/).pop() || 'Local Lecture Video';
@@ -62,15 +67,18 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
             },
             simulatedMode
           );
+          return;
         }
-        return;
+      } catch (err) {
+        console.warn('Native Electron openVideoFile error, falling back to browser picker:', err);
       }
-    } catch {
-      // Fall through to native browser file input
     }
 
-    // Fallback file picker input (works even in standalone browser / non-IPC context)
-    fileInputRef.current?.click();
+    // In web browser / Vercel deployment: open native file selection dialog
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+      fileInputRef.current.click();
+    }
   };
 
   const handleBrowserFileSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -228,12 +236,18 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
             <button
               type="button"
               onClick={() => {
+                const isElectron =
+                  typeof navigator !== 'undefined' &&
+                  /electron/i.test(navigator.userAgent);
+                const sampleSrc = isElectron
+                  ? '/Users/apple/Desktop/relay-demo.mp4'
+                  : 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4';
                 onStartSession(
                   {
-                    type: 'local',
-                    pathOrUrl: '/Users/apple/Desktop/relay-demo.mp4',
+                    type: isElectron ? 'local' : 'url',
+                    pathOrUrl: sampleSrc,
                     duration: 134,
-                    name: 'relay-demo.mp4'
+                    name: isElectron ? 'relay-demo.mp4' : 'sample-lecture.mp4'
                   },
                   simulatedMode
                 );
@@ -249,7 +263,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                 fontWeight: 600
               }}
             >
-              ▶ Start with relay-demo.mp4
+              ▶ Start with Quick Sample
             </button>
           </div>
 
