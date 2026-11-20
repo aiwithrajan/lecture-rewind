@@ -223,6 +223,36 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
             Choose / Upload Video File (.mp4, .webm)
           </button>
 
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '-4px' }}>
+            <span style={{ fontSize: '12px', color: '#64748b' }}>Quick Sample:</span>
+            <button
+              type="button"
+              onClick={() => {
+                onStartSession(
+                  {
+                    type: 'local',
+                    pathOrUrl: '/Users/apple/Desktop/relay-demo.mp4',
+                    duration: 134,
+                    name: 'relay-demo.mp4'
+                  },
+                  simulatedMode
+                );
+              }}
+              style={{
+                background: 'rgba(56, 189, 248, 0.12)',
+                border: '1px solid rgba(56, 189, 248, 0.35)',
+                color: '#38bdf8',
+                borderRadius: '6px',
+                padding: '4px 10px',
+                fontSize: '12px',
+                cursor: 'pointer',
+                fontWeight: 600
+              }}
+            >
+              ▶ Start with relay-demo.mp4
+            </button>
+          </div>
+
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px', margin: '4px 0' }}>
             <div style={{ flex: 1, height: '1px', background: '#2e3c54' }}></div>
             <span style={{ fontSize: '12px', color: '#64748b' }}>OR PLAY FROM URL</span>
