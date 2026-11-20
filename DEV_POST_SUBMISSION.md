@@ -12,7 +12,10 @@ canonical_url: https://github.com/aiwithrajan/lecture-rewind
 
 ## 💡 What I Built
 
-**Lecture Rewind** is an open-source, desktop-native lecture recovery engine designed for students and self-directed learners. 
+**Lecture Rewind** is an open-source, consent-first lecture recovery engine designed for students and self-directed learners. 
+
+- 🌐 **Live Web Demo**: [https://presage-bice.vercel.app](https://presage-bice.vercel.app)
+- 💻 **GitHub Repository**: [https://github.com/aiwithrajan/lecture-rewind](https://github.com/aiwithrajan/lecture-rewind) 
 
 When studying complex video lectures (whether a 2-hour university course, code architecture briefing, or technical symposium), learners inevitably experience brief physical lapses — looking down at notes, walking away to grab water, or closing their eyes during long explanations. 
 

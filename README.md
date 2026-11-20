@@ -1,6 +1,9 @@
 # Lecture Rewind
 
-A desktop lecture recovery engine built with **Electron, React 18, and TypeScript** that tracks physical presence via local webcam signals and compiles missed intervals into a structured, chapter-snapped recovery queue.
+A consent-first lecture recovery engine built with **Electron, React 18, and TypeScript** that tracks physical presence via local webcam signals and compiles missed intervals into a structured, chapter-snapped recovery queue.
+
+- 🌐 **Live Web Demo**: [https://presage-bice.vercel.app](https://presage-bice.vercel.app)
+- 💻 **Public GitHub**: [https://github.com/aiwithrajan/lecture-rewind](https://github.com/aiwithrajan/lecture-rewind)
 
 > **Design Axiom: Presence, never comprehension.**  
 > Lecture Rewind strictly measures mechanical physical presence (whether a face is in frame and eyes are open). It never makes medical claims, emotional inferences, or focus/comprehension judgments.

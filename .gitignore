@@ -5,3 +5,4 @@ src/renderer/public/mediapipe/
 .env.local
 .DS_Store
 *.log
+.vercel
