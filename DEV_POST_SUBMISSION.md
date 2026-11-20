@@ -30,13 +30,14 @@ Upon concluding a study session, the app compiles these moments into an **intera
 
 ## 🎥 Demo Video
 
-**Watch the full 2-minute walkthrough with synchronized on-device tracking:**
+**Watch the full 2-minute walkthrough with synchronized on-device tracking & AI narration:**
 
-*(Replace with your uploaded YouTube or Vimeo link, or download the high-resolution demo from the GitHub repository)*
+{% youtube DL14YK4us90 %}
 
-[![Lecture Rewind Demo Video](https://img.youtube.com/vi/YOUR_VIDEO_ID/maxresdefault.jpg)](https://www.youtube.com/watch?v=YOUR_VIDEO_ID)
+[![Lecture Rewind Demo Video](https://img.youtube.com/vi/DL14YK4us90/maxresdefault.jpg)](https://www.youtube.com/watch?v=DL14YK4us90)
 
-> 📹 **Local Demo Video**: The rendered demo video `lecture-rewind-final-demo.mp4` is included directly in the repository and showcases:
+> 📹 **YouTube Link**: [https://youtu.be/DL14YK4us90](https://youtu.be/DL14YK4us90)  
+> The walkthrough highlights:
 > 1. Guided 20-second biometric calibration & sensor reliability verdict.
 > 2. Real-time eye aspect ratio (EAR) and blink tracking HUD with absence detection.
 > 3. Full-Session Review Screen with interactive timelines and compiled rewind queues.

@@ -236,18 +236,12 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
             <button
               type="button"
               onClick={() => {
-                const isElectron =
-                  typeof navigator !== 'undefined' &&
-                  /electron/i.test(navigator.userAgent);
-                const sampleSrc = isElectron
-                  ? '/Users/apple/Desktop/relay-demo.mp4'
-                  : 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4';
                 onStartSession(
                   {
-                    type: isElectron ? 'local' : 'url',
-                    pathOrUrl: sampleSrc,
-                    duration: 134,
-                    name: isElectron ? 'relay-demo.mp4' : 'sample-lecture.mp4'
+                    type: 'url',
+                    pathOrUrl: 'https://www.youtube.com/watch?v=DL14YK4us90',
+                    duration: 115,
+                    name: 'Presage Challenge Demo (YouTube)'
                   },
                   simulatedMode
                 );
@@ -263,7 +257,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                 fontWeight: 600
               }}
             >
-              ▶ Start with Quick Sample
+              ▶ Start with Demo Video (YouTube)
             </button>
           </div>
 
