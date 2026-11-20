@@ -113,9 +113,9 @@ Lecture Rewind is architected directly around the **Presage SmartSpectra SDK** (
 4. **Hands-Free Intentional Gesture Bookmarking**:
    SmartSpectra's high-frequency blink stream allows us to differentiate natural involuntary blinks ($< 350\text{ ms}$) from deliberate double-blinks ($2$ rapid blinks within $800\text{ ms}$). When a student double-blinks intentionally, the app drops a bookmark without requiring their hands to leave their handwritten notes or keyboard.
 
-5. **Dual-Engine Architecture (Native C-FFI + Web Pipeline)**:
-   - **Native Desktop App**: Runs `@smartspectra/node-sdk` with precompiled C-ABI runtime libraries loaded via `koffi` FFI.
-   - **Web Application**: For judges and users evaluating the platform in standard browsers without native FFI dependencies, we created an isomorphic provider that follows the identical SmartSpectra contract via client-side WebAssembly.
+5. **Dual-Engine Architecture (Native C-FFI + Browser Fallback)**:
+   - **Native Desktop App (Primary Engine)**: Runs the official `@smartspectra/node-sdk` with precompiled C-ABI runtime libraries loaded via `koffi` FFI.
+   - **Web Demo (MediaPipe Browser Fallback)**: For judges evaluating the live web demo directly in a browser without compiling native C-FFI dependencies, we built a zero-install MediaPipe browser fallback that fulfills the exact same human-sensing interface on Vercel.
 
 6. **Deterministic Rewind Queue Pipeline**:
    When the session finishes, the `QueueBuilder` runs a 5-step compilation pipeline:

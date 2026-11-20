@@ -27,9 +27,9 @@ Lecture Rewind is architected directly on the **Presage SmartSpectra SDK** (`@sm
 4. **Hands-Free Intentional Gesture Bookmarking**:
    SmartSpectra's high-frequency blink stream allows us to differentiate natural involuntary blinks ($< 350\text{ ms}$) from deliberate double-blinks ($2$ rapid blinks within $800\text{ ms}$). When a student double-blinks intentionally, the app drops a bookmark without requiring their hands to leave their handwritten notes or keyboard.
 
-5. **Dual-Engine Architecture (Native C-FFI + Zero-Install Web)**:
-   - **Native Desktop App**: Runs `@smartspectra/node-sdk` with precompiled C-ABI runtime libraries loaded via `koffi` FFI and IPC bridges (`@smartspectra/node-sdk/main`, `@smartspectra/node-sdk/preload`, `@smartspectra/node-sdk/renderer`).
-   - **Web Application**: For judges and users evaluating the platform in standard browsers without native FFI dependencies, we created an isomorphic provider that follows the identical SmartSpectra contract via client-side WebAssembly.
+5. **Dual-Engine Architecture (Native C-FFI + Browser Fallback)**:
+   - **Native Desktop App (Primary Engine)**: Runs `@smartspectra/node-sdk` with precompiled C-ABI runtime libraries loaded via `koffi` FFI and IPC bridges (`@smartspectra/node-sdk/main`, `@smartspectra/node-sdk/preload`, `@smartspectra/node-sdk/renderer`).
+   - **Web Demo (MediaPipe Browser Fallback)**: For judges and students evaluating the live web demo directly in a browser without compiling native C-FFI dependencies, we built a zero-install MediaPipe browser fallback that fulfills the exact same human-sensing interface on Vercel.
 
 ---
 
@@ -87,7 +87,7 @@ npm run dev
 
 ## 🛠️ Complete Functional Requirements (FR-1 to FR-18)
 
-- **FR-1**: Presage SmartSpectra SDK Human-Sensing Vision Pipeline (`@smartspectra/node-sdk`): C-ABI FFI bindings for real-time optical presence validation (`ValidationCode`), cardiovascular pulse rate (`cardioMetrics`), high-speed blink stream (`faceMetrics`), and 3D eye aperture tracking (with isomorphic browser WebAssembly provider for zero-install web evaluation).
+- **FR-1**: Presage SmartSpectra SDK Human-Sensing Vision Pipeline (`@smartspectra/node-sdk`): C-ABI FFI bindings for real-time optical presence validation (`ValidationCode`), cardiovascular pulse rate (`cardioMetrics`), high-speed blink stream (`faceMetrics`), and 3D eye aperture tracking (with zero-install MediaPipe browser fallback for instant web evaluation).
 - **FR-2**: Guided self-test calibration (neutral hold + prompted closure + latency estimation).
 - **FR-3**: Corroborating evidence evaluator (Rules A, B, C, D, E, F).
 - **FR-4**: 6-state corroborate state machine (`Watching`, `Suspect`, `Absent`, `Waiting`, `Returned`, `Degraded`).

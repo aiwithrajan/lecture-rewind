@@ -1352,7 +1352,7 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
                   boxShadow: `0 0 8px ${getStatusColor()}`
                 }} />
                 <span style={{ fontSize: '11px', fontWeight: 700, color: '#f8fafc', letterSpacing: '0.5px' }}>
-                  {isSimulatedProvider ? 'SIMULATED TRACE HUD' : hasWebcamStream ? 'LIVE WEBCAM (478-PT)' : 'REAL-TIME TRACKING HUD'}
+                  {isSimulatedProvider ? 'SMARTSPECTRA SIMULATED HUD' : hasWebcamStream ? 'SMARTSPECTRA LIVE HUD' : 'SMARTSPECTRA TRACKING HUD'}
                 </span>
                 {blinkFlash && (
                   <span style={{
@@ -1435,7 +1435,7 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
                     </div>
                   ) : (
                     <span>
-                      {faceDetected ? 'FACE LOCKED' : 'SEARCHING...'} | PITCH: {livePitch >= 0 ? '+' : ''}{livePitch.toFixed(0)}° | YAW: {liveYaw >= 0 ? '+' : ''}{liveYaw.toFixed(0)}°
+                      {faceDetected ? 'OPTICAL: VALID (kOk)' : 'OPTICAL: SEARCHING (kNoFaceFound)'} | PITCH: {livePitch >= 0 ? '+' : ''}{livePitch.toFixed(0)}° | YAW: {liveYaw >= 0 ? '+' : ''}{liveYaw.toFixed(0)}°
                     </span>
                   )}
                 </div>

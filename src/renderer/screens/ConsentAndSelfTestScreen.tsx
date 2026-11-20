@@ -523,7 +523,7 @@ export const ConsentAndSelfTestScreen: React.FC<ConsentAndSelfTestScreenProps> =
               color: '#38bdf8',
               fontFamily: 'monospace'
             }}>
-              {simulatedMode ? 'MODE: SYNTHETIC REPLAY HARNESS' : 'CAMERA: LIVE WEBCAM (478-PT MESH)'}
+              {simulatedMode ? 'MODE: SMARTSPECTRA SYNTHETIC HARNESS' : 'SMARTSPECTRA: OPTICAL STREAM (478-PT MESH)'}
             </div>
             <div style={{
               position: 'absolute',
