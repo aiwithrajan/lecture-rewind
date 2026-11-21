@@ -26,6 +26,9 @@ In one click, you replay only the exact intervals you missed — pre-rolled by 1
 - 💻 **Public Code Repository**: [https://github.com/aiwithrajan/lecture-rewind](https://github.com/aiwithrajan/lecture-rewind)
 - 🎥 **Video Walkthrough**: [https://youtu.be/DL14YK4us90](https://youtu.be/DL14YK4us90)
 
+![Lecture Rewind Auto-Pause in Action](https://raw.githubusercontent.com/aiwithrajan/lecture-rewind/main/assets/walk-away-pause.gif)
+*Real-time Presage optical tracking: Sustained absence/closure triggers automatic pause with instant pre-rolled recovery resume.*
+
 ![Lecture Rewind Dashboard](https://raw.githubusercontent.com/aiwithrajan/lecture-rewind/main/assets/cover.png)
 
 > 🧭 **Core Design Axiom: Presence, never comprehension.**  

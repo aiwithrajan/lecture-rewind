@@ -6,6 +6,9 @@ A consent-first lecture recovery engine powered by the **Presage SmartSpectra SD
 - 💻 **Public GitHub**: [https://github.com/aiwithrajan/lecture-rewind](https://github.com/aiwithrajan/lecture-rewind)
 - 🎥 **Video Walkthrough**: [https://youtu.be/DL14YK4us90](https://youtu.be/DL14YK4us90)
 
+![Lecture Rewind Auto-Pause in Action](assets/walk-away-pause.gif)
+*Real-time Presage optical tracking: Sustained absence/closure triggers automatic pause with instant pre-rolled recovery resume.*
+
 > **Design Axiom: Presence, never comprehension.**  
 > Lecture Rewind strictly measures mechanical physical presence (whether a face is in frame and eyes are open). It never makes medical claims, emotional inferences, or cognitive comprehension judgments.
 
