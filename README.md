@@ -7,7 +7,47 @@ A consent-first lecture recovery engine powered by the **Presage SmartSpectra SD
 - 🎥 **Video Walkthrough**: [https://youtu.be/DL14YK4us90](https://youtu.be/DL14YK4us90)
 
 > **Design Axiom: Presence, never comprehension.**  
-> Lecture Rewind strictly measures mechanical physical presence (whether a face is in frame and eyes are open). It never makes medical claims, emotional inferences, or focus/comprehension judgments.
+> Lecture Rewind strictly measures mechanical physical presence (whether a face is in frame and eyes are open). It never makes medical claims, emotional inferences, or cognitive comprehension judgments.
+
+---
+
+## 🔍 Where Presage SmartSpectra SDK Is Used (Judge Code Map)
+
+For hackathon judges auditing `@smartspectra/node-sdk` integration, here is the direct file and line index:
+
+| Capability | SDK Feature / Channel | Exact Source File | What It Does in Lecture Rewind |
+| :--- | :--- | :--- | :--- |
+| **C-ABI IPC Bridge** | `bindSmartSpectraIpc` | [`src/main/index.ts`](src/main/index.ts) | Attaches native SmartSpectra message port bridge to Electron browser window. |
+| **Preload Bridge** | `@smartspectra/node-sdk/preload` | [`src/preload/index.ts`](src/preload/index.ts) | Bridges native SDK context into sandboxed renderer. |
+| **Optical Presence & Validation** | `ValidationCode` (`kOk`, `kNoFaceFound`, `kFaceNotForward`, `kTooDark`) | [`src/renderer/providers/SmartSpectraProvider.ts`](src/renderer/providers/SmartSpectraProvider.ts)<br>[`src/renderer/screens/PlayerScreen.tsx`](src/renderer/screens/PlayerScreen.tsx) | Continuously evaluates optical validity. If `kNoFaceFound` or `kFaceNotForward` persists $>4.0$s, flags absence and triggers automatic playback pause. |
+| **Cardiovascular Pulse Rate** | `cardioMetrics` (`MetricType.PULSE_RATE`) | [`src/renderer/providers/SmartSpectraProvider.ts`](src/renderer/providers/SmartSpectraProvider.ts)<br>[`src/renderer/screens/ReviewAndPrivacyScreen.tsx`](src/renderer/screens/ReviewAndPrivacyScreen.tsx) | Decodes protobuf metrics buffer (`decodeMetrics(buf)`). Aggregates into 12-second rolling rPPG pulse context line on the review timeline. |
+| **Facial Landmarks & Blinking** | `faceMetrics` (`MetricType.FACE_LANDMARKS`, `MetricType.BLINKING`) | [`src/renderer/providers/SmartSpectraProvider.ts`](src/renderer/providers/SmartSpectraProvider.ts)<br>[`src/renderer/engine/LandmarkGeometry.ts`](src/renderer/engine/LandmarkGeometry.ts)<br>[`src/renderer/engine/EvidenceEvaluator.ts`](src/renderer/engine/EvidenceEvaluator.ts) | Extracts 3D landmark coordinates to compute continuous Eye Aspect Ratio (EAR) and differentiates involuntary blinks from rapid intentional double-blink gesture bookmarks ($<800\text{ms}$). |
+| **Web Browser Fallback** | MediaPipe Browser Fallback | [`src/renderer/browser-polyfill.ts`](src/renderer/browser-polyfill.ts) | Zero-install client-side fallback allowing judges to evaluate the app directly on Vercel without native compile dependencies. |
+
+---
+
+## 🏗️ Architecture
+
+```mermaid
+flowchart TD
+    Webcam["📷 Webcam Stream (30 FPS)"] --> Presage["🧠 Presage SmartSpectra SDK (@smartspectra/node-sdk)"]
+    
+    Presage -->|"validationStatus"| Optical["ValidationCode (kOk / kNoFaceFound / kFaceNotForward)"]
+    Presage -->|"metrics (cardioMetrics)"| Cardio["cardioMetrics: PULSE_RATE (rPPG Stream)"]
+    Presage -->|"metrics (faceMetrics)"| Face["faceMetrics: FACE_LANDMARKS & BLINKING"]
+    
+    Optical --> StateMachine["⚙️ Absence State Machine (Watching / Absent / Waiting)"]
+    Face --> EAR["👁️ Euclidean EAR Evaluator & Gesture Detector"]
+    EAR -->|"Sustained Closure (>6s)"| StateMachine
+    EAR -->|"Intentional Double-Blink (<800ms)"| Bookmark["📌 Drop Instant Bookmark"]
+    
+    StateMachine -->|"Sustained Absence (>4s)"| AutoPause["⏸️ Auto-Pause Video + Show Rejoin HUD"]
+    
+    AutoPause --> QueueBuilder["⚡ Deterministic QueueBuilder (+10s Pre-Roll & Chapter Snapping)"]
+    Bookmark --> QueueBuilder
+    Cardio --> ReviewTimeline["📊 Interactive Session Timeline & Recovery Player"]
+    QueueBuilder --> ReviewTimeline
+```
 
 ---
 
@@ -38,8 +78,9 @@ Lecture Rewind is architected directly on the **Presage SmartSpectra SDK** (`@sm
 You can test 100% of the application's capabilities **without a webcam, API key, or external dependencies** using the built-in **Simulated Mode (FR-17, AC-6)**.
 
 ```bash
-# 1. Install dependencies
-npm install
+# 1. Clone & install dependencies
+git clone https://github.com/aiwithrajan/lecture-rewind.git
+cd lecture-rewind && npm install
 
 # 2. Run automated test suite (76/76 unit tests pass in ~1.5s)
 npm test
@@ -47,8 +88,8 @@ npm test
 # 3. Verify strict TypeScript types (0 errors)
 npm run typecheck
 
-# 4. Launch the application
-npm run dev
+# 4. Launch native desktop application with Presage SmartSpectra
+npm run desktop
 ```
 
 ### In-App Demo Walkthrough

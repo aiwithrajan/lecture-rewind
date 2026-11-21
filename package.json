@@ -7,6 +7,7 @@
     "sync:mediapipe": "node -e \"const fs=require('fs');fs.mkdirSync('src/renderer/public/mediapipe/face_mesh',{recursive:true});fs.cpSync('node_modules/@mediapipe/face_mesh','src/renderer/public/mediapipe/face_mesh',{recursive:true});\"",
     "predev": "npm run sync:mediapipe",
     "dev": "electron-vite dev",
+    "desktop": "electron-vite dev",
     "prebuild": "npm run sync:mediapipe",
     "build": "electron-vite build",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
